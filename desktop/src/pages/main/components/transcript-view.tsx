@@ -383,7 +383,10 @@ export default function TranscriptView({
 	const scrollRef = useRef<HTMLDivElement>(null)
 	const listRef = useRef<HTMLDivElement>(null)
 	const running = job.status === 'running'
-	const editable = !running && (job.status === 'done' || job.hydrated === true)
+	// A live session's closed lines are final the moment they land, so they can be fixed while the
+	// next ones still stream in; a file's lines wait for the run to end.
+	const editable = job.live === true || (!running && (job.status === 'done' || job.hydrated === true))
+	const partial = job.live ? (job.partial ?? null) : null
 
 	const [editing, setEditing] = useState<EditTarget | null>(null)
 	const [activeIndex, setActiveIndex] = useState(-1)
@@ -492,6 +495,16 @@ export default function TranscriptView({
 		if (!running || !following || editing || visible.length === 0) return
 		rowVirtualizer.scrollToIndex(visible.length - 1, { align: 'end' })
 	}, [job.segments.length, editing, following, rowVirtualizer, running, visible.length])
+
+	// The live line in progress sits under the list, so following means the very bottom.
+	useEffect(() => {
+		if (!job.live || !following || editing) return
+		const frame = requestAnimationFrame(() => {
+			const element = scrollRef.current
+			if (element) element.scrollTop = element.scrollHeight
+		})
+		return () => cancelAnimationFrame(frame)
+	}, [job.live, job.segments.length, partial?.text, editing, following])
 
 	// Spacebar plays and pauses while reading — never while typing into the transcript.
 	useEffect(() => {
@@ -648,9 +661,19 @@ export default function TranscriptView({
 								</Button>
 							</div>
 						</div>
-					) : visible.length === 0 ? (
+					) : visible.length === 0 && !partial ? (
 						<p className="text-sm text-muted-foreground">
-							{query ? m.noMatchingLines() : running ? m.transcriptWillDisplayedShortly() : job.status === 'queued' ? m.loading() : ''}
+							{query
+								? m.noMatchingLines()
+								: job.live
+									? job.liveReady
+										? m.transcriptWillDisplayedShortly()
+										: m.livePreparing()
+									: running
+										? m.transcriptWillDisplayedShortly()
+										: job.status === 'queued'
+											? m.loading()
+											: ''}
 						</p>
 					) : null}
 
@@ -687,7 +710,25 @@ export default function TranscriptView({
 						})}
 					</div>
 
-					{running && <div className={cn('mt-8 h-4 w-24 animate-pulse rounded-full bg-muted')} />}
+					{/* The utterance still being spoken: no settled time yet, so a moving dot stands in the gutter. */}
+					{partial && !query && (
+						<motion.div
+							key="partial"
+							initial={{ opacity: 0, y: 4 }}
+							animate={{ opacity: 1, y: 0 }}
+							transition={{ duration: 0.15, ease: 'easeOut' }}
+							className="-mx-3 mt-1 flex gap-3 rounded-xl px-3 py-2">
+							<span
+								className={cn('mt-[3px] flex h-5 shrink-0 items-center justify-end select-none', options.showTimestamps ? 'w-[52px]' : 'w-4')}>
+								<span aria-hidden className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground" />
+							</span>
+							<span className={cn('block min-w-0 flex-1 whitespace-pre-wrap text-muted-foreground italic', textSizeClass[options.textSize])}>
+								{partial.text.trim()}
+							</span>
+						</motion.div>
+					)}
+
+					{running && !job.live && <div className={cn('mt-8 h-4 w-24 animate-pulse rounded-full bg-muted')} />}
 				</div>
 			</div>
 

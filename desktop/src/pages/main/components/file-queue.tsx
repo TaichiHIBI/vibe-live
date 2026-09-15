@@ -7,6 +7,14 @@ import type { Job } from '../hooks/use-transcribe-queue'
 import { useSession } from '../session'
 
 function StatusIcon({ job }: { job: Job }) {
+	if (job.live) {
+		return (
+			<span aria-hidden className="relative flex h-2 w-2">
+				<span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-destructive/60" />
+				<span className="relative inline-flex h-2 w-2 rounded-full bg-destructive" />
+			</span>
+		)
+	}
 	switch (job.status) {
 		case 'running':
 			return <Spinner className="h-3.5 w-3.5 text-foreground" />
@@ -22,6 +30,7 @@ function StatusIcon({ job }: { job: Job }) {
 }
 
 function statusLabel(job: Job) {
+	if (job.live) return job.liveReady ? m.liveLabel() : m.livePreparing()
 	switch (job.status) {
 		case 'running':
 			return `${Math.round(job.progress)}%`
@@ -86,7 +95,8 @@ export default function FileQueue() {
 									<StatusIcon job={job} />
 								</span>
 								<span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">{job.name}</span>
-								{job.status === 'running' && (
+								{/* A live session stops from its banner, not from the rail. */}
+								{job.status === 'running' && !job.live && (
 									<span
 										role="button"
 										tabIndex={0}
@@ -107,7 +117,7 @@ export default function FileQueue() {
 								{statusLabel(job)}
 							</p>
 
-							{job.status === 'running' && (
+							{job.status === 'running' && !job.live && (
 								<div className="mt-2 ms-6 h-[3px] overflow-hidden rounded-full bg-muted-foreground/15">
 									<motion.div
 										className="aurora-bar h-full rounded-full bg-primary/70"

@@ -9,9 +9,11 @@ interface AudioDeviceInputProps {
 	devices: AudioDevice[]
 	device: AudioDevice | null
 	setDevice: ModifyState<AudioDevice | null>
+	/** Called when the list opens, so a headset plugged in after launch shows up. */
+	onOpen?: () => void
 }
 
-export default function AudioDeviceInput({ type, devices, device, setDevice }: AudioDeviceInputProps) {
+export default function AudioDeviceInput({ type, devices, device, setDevice, onOpen }: AudioDeviceInputProps) {
 	const filtered = devices.filter((d) => (d.isInput && type === 'input') || (!d.isInput && type === 'output'))
 
 	return (
@@ -19,6 +21,9 @@ export default function AudioDeviceInput({ type, devices, device, setDevice }: A
 			<Label>{type === 'input' ? m.microphone() : m.speakers()}</Label>
 			<Select
 				value={device?.id ?? 'none'}
+				onOpenChange={(open) => {
+					if (open) onOpen?.()
+				}}
 				onValueChange={(value) => {
 					if (value === 'none') {
 						setDevice(null)

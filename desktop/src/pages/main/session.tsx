@@ -22,12 +22,11 @@ import { usePreferenceProvider, type Preference } from '~/providers/preference'
 import { useAudioDownload } from '~/pages/home/hooks/use-audio-download'
 import { useRecording } from '~/pages/home/hooks/use-recording'
 import { useDropTarget } from './hooks/use-drop-target'
-import { useLiveTranscript, type LiveTranscript } from './hooks/use-live-transcript'
 import { useSummaries, type Summaries } from './hooks/use-summaries'
 import { useTranscribeQueue, type TranscribeQueue } from './hooks/use-transcribe-queue'
 
-/** `live` while a live transcription session is open; it takes over the whole content area. */
-export type SessionMode = 'idle' | 'working' | 'done' | 'live'
+/** A live session is an ordinary running job of the queue, so it shows as `working` like a file. */
+export type SessionMode = 'idle' | 'working' | 'done'
 export type IdlePanel = 'none' | 'record' | 'link'
 
 type Recording = ReturnType<typeof useRecording>
@@ -44,8 +43,6 @@ export interface Session {
 	setPanel: (panel: IdlePanel) => void
 	recording: Recording
 	recordElapsed: number
-	/** Lines of the open live session; empty outside `mode === 'live'`. */
-	live: LiveTranscript
 	link: AudioDownload
 	collectingFolder: boolean
 	browse: () => Promise<void>
@@ -77,6 +74,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 	useEffect(() => {
 		enqueueRef.current = queue.enqueue
 	}, [queue.enqueue])
+	// The event listeners below are registered once; they read the queue through this ref.
+	const queueRef = useRef(queue)
+	useEffect(() => {
+		queueRef.current = queue
+	}, [queue])
+	/**
+	 * The live session's job, from the moment the capture starts until `live_finish` / `live_error`
+	 * is handled. Owned here rather than mirrored from `queue.liveJobId` so a handler can claim it
+	 * synchronously, before the async save that follows.
+	 */
+	const liveJobIdRef = useRef<string | null>(null)
 	const recordingCompletionRef = useRef({
 		hydrate: queue.hydrate,
 		transcribeJob: queue.transcribeJob,
@@ -133,13 +141,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 		[enqueuePaths],
 	)
 
-	const manualRecording = useRecording(() => setPanel('record'))
+	const manualRecording = useRecording(() => setPanel('record'), {
+		// The capture is running: from here on the session is a job of the queue, streaming its lines.
+		onLiveStarted: (name) => {
+			liveJobIdRef.current = queue.startLiveJob(name)
+		},
+		onLiveStartFailed: (message) => {
+			const id = liveJobIdRef.current
+			if (!id) return
+			liveJobIdRef.current = null
+			queue.failLiveJob(id, message)
+		},
+	})
 	const recording = useMemo(
 		() => ({ ...manualRecording, isRecording: manualRecording.isRecording || recordingShortcut.isShortcutRecording }),
 		[manualRecording, recordingShortcut.isShortcutRecording],
 	)
 	const link = useAudioDownload(transcribeDownloads)
-	const live = useLiveTranscript(recording.isLive)
 
 	// The shortcut must not start a recording over a live session either: both hold the capture.
 	const capturing = recording.isRecording || recording.isLive
@@ -148,10 +166,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 		return () => recordingShortcut.setNormalRecordingActive(false)
 	}, [capturing, recordingShortcut.setNormalRecordingActive])
 
-	// A session starts from a clean slate; the previous one's lines are already a project.
+	// The session can also end without an event: `stop_live` itself failing clears `isLive` from the
+	// hook. A job still marked live at that point would stream forever, so it fails here instead.
 	useEffect(() => {
-		if (recording.isLive) live.reset()
-	}, [recording.isLive, live.reset])
+		if (recording.isLive) return
+		const id = liveJobIdRef.current
+		if (!id) return
+		liveJobIdRef.current = null
+		queue.failLiveJob(id, m.error())
+	}, [recording.isLive, queue.failLiveJob])
 
 	useEffect(() => {
 		if (recordingShortcut.isShortcutRecording) setPanel('record')
@@ -231,19 +254,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
 	// A live session ends as a finished project: the WAV plus every line the backend closed. There
 	// is no transcription step afterwards — the transcript already exists — but an empty one is
-	// still saved, so the audio is never lost.
+	// still saved, so the audio is never lost. The job that streamed the lines becomes that project.
 	useEffect(() => {
 		const unlisten: Promise<UnlistenFn> = listen<{ path: string; name: string; segments: Segment[] }>('live_finish', async ({ payload }) => {
+			// Claimed before the first await: the isLive effect above must not fail this job meanwhile.
+			const jobId = liveJobIdRef.current
+			liveJobIdRef.current = null
 			recording.setIsLive(false)
 			stopKeepAwake(KEEP_AWAKE.record)
 			setPanel('none')
-			live.reset()
-			const segments = Array.isArray(payload.segments) ? payload.segments : []
+			const queue = queueRef.current
+			const job = jobId ? queue.jobs.find((candidate) => candidate.id === jobId) : undefined
+			const received = Array.isArray(payload.segments) ? payload.segments : []
+			// The lines on screen carry the user's edits; the payload wins only when it knows more
+			// lines than reached the window (the flushed tail, or an event that got lost).
+			const segments = job && job.segments.length >= received.length ? job.segments : received
 			if (segments.length === 0) toast.info(m.liveNothingTranscribed(), { position: 'bottom-center' })
 
-			const { preference: current, hydrate } = recordingCompletionRef.current
+			const { preference: current } = recordingCompletionRef.current
 			const name = autoProjectName(payload.name, 'record')
-			const createdAt = new Date()
 			const saved = await saveTranscript({
 				name,
 				sourcePath: payload.path,
@@ -252,46 +281,54 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 				segments,
 				language: current.modelOptions.lang,
 				modelPath: current.modelPath,
-				createdAt,
+				createdAt: new Date(),
 			})
 			if (!saved) {
 				const message = `Failed to save live transcription project; the recording remains at ${payload.path}`
 				console.error(message)
 				toast.error(m.error(), { description: message, position: 'bottom-center' })
+				if (jobId) queue.failLiveJob(jobId, message)
 				return
 			}
 
-			const record: TranscriptRecord = {
-				version: TRANSCRIPT_VERSION,
-				name,
-				sourcePath: saved.mediaPath,
-				createdAt: createdAt.toISOString(),
-				language: current.modelOptions.lang,
-				modelPath: current.modelPath,
-				segments,
+			if (jobId) {
+				queue.finishLiveJob(jobId, { name, path: saved.mediaPath, savedPath: saved.recordPath, segments })
+			} else {
+				// No job to land in (the window lost track of the session): open the project as a Recent would.
+				const record: TranscriptRecord = {
+					version: TRANSCRIPT_VERSION,
+					name,
+					sourcePath: saved.mediaPath,
+					createdAt: new Date().toISOString(),
+					language: current.modelOptions.lang,
+					modelPath: current.modelPath,
+					segments,
+				}
+				queue.hydrate(record, saved.recordPath, saved.mediaPath, 'record')
 			}
-			hydrate(record, saved.recordPath, saved.mediaPath, 'record')
 			notifyTranscriptsChanged()
 		})
 		return () => {
 			unlisten.then((fn) => fn())
 		}
-	}, [recording.setIsLive, live.reset])
+	}, [recording.setIsLive])
 
 	useEffect(() => {
 		const unlisten: Promise<UnlistenFn> = listen<string | { message?: string }>('live_error', ({ payload }) => {
 			const message = typeof payload === 'string' ? payload : payload?.message || m.error()
+			const jobId = liveJobIdRef.current
+			liveJobIdRef.current = null
 			recording.setIsLive(false)
 			stopKeepAwake(KEEP_AWAKE.record)
 			setPanel('none')
-			live.reset()
+			if (jobId) queueRef.current.failLiveJob(jobId, message)
 			toast.error(m.error(), { description: message, position: 'bottom-center' })
 			setErrorModal?.({ log: message, open: true })
 		})
 		return () => {
 			unlisten.then((fn) => fn())
 		}
-	}, [recording.setIsLive, live.reset, setErrorModal])
+	}, [recording.setIsLive, setErrorModal])
 
 	const browse = useCallback(async () => {
 		/**
@@ -387,13 +424,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 	const hasUnsavedResults = queue.jobs.some((job) => job.status === 'done' && !job.hydrated && !job.savedPath)
 	useConfirmExit(preference.closeToTray, queue.running || hasUnsavedResults || recording.isLive)
 
-	const mode: SessionMode = recording.isLive
-		? 'live'
-		: queue.jobs.length === 0
-			? 'idle'
-			: queue.running || queue.jobs.some((job) => job.status === 'queued')
-				? 'working'
-				: 'done'
+	const mode: SessionMode =
+		queue.jobs.length === 0 ? 'idle' : queue.running || queue.jobs.some((job) => job.status === 'running' || job.status === 'queued') ? 'working' : 'done'
 
 	const value = useMemo<Session>(
 		() => ({
@@ -406,13 +438,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 			setPanel,
 			recording,
 			recordElapsed,
-			live,
 			link,
 			collectingFolder,
 			browse,
 			startNew,
 		}),
-		[mode, queue, summaries, preference, dragging, panel, recording, recordElapsed, live, link, collectingFolder, browse, startNew],
+		[mode, queue, summaries, preference, dragging, panel, recording, recordElapsed, link, collectingFolder, browse, startNew],
 	)
 
 	return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>

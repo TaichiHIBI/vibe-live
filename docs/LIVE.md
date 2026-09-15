@@ -16,9 +16,14 @@ pieces are:
    mono WAV to the temp folder, and re-emits the server's lines as Tauri events.
 3. The frontend: a "Live" switch on the record panel with its own model picker
    (`recording.liveModelPath`, empty = the file model; the language setting is
-   translated to the live engine's spelling by `lib/live-language.ts`), a live
-   view that shows the finished lines plus the in-progress line, and on stop
-   the same project flow a recording takes (`saveTranscript` + `hydrate`).
+   translated to the live engine's spelling by `lib/live-language.ts`). The
+   session is an ordinary job in the transcribe queue (`Job.live`,
+   `startLiveJob` / `finishLiveJob` / `failLiveJob`): its final lines stream
+   into the normal transcript view and are editable while it runs, the partial
+   is drawn below them, a banner above the toolbar carries the meter, the
+   clock and Stop, other projects can be opened beside it, and file jobs
+   enqueued meanwhile wait until it ends (the server serves one at a time).
+   On stop the edited lines are saved as a project (`saveTranscript`).
 
 ## Cleaning up afterwards: AI vocabulary prompt
 
@@ -79,8 +84,12 @@ like any concurrent request: the model lease is exclusive.
 
 Commands:
 
-- `start_live(devices: AudioDevice[], options: { lang?: string, vadModel: string, recordingName?: string, partialMode?: 'fixed' | 'auto' | 'off', partialIntervalMs?: number })`
-  — the frontend calls `load_model` first, exactly as the transcribe queue does.
+- `start_live(devices: AudioDevice[], recordingName?: string)` — starts the
+  capture at once (WAV + in-memory buffer) and returns.
+- `live_connect(options: { lang?: string, vadModel: string, prompt?: string, partialMode?: 'fixed' | 'auto' | 'off', partialIntervalMs?: number })`
+  — called after `load_model` (and the vocabulary prompt): opens the socket,
+  sends the buffered audio, emits `live_ready`. Stopping before this point
+  ends the session as a recording without lines.
 - `stop_live()` — returns at once; the result arrives as `live_finish`.
 
 Events (all emitted to the `main` window):
@@ -88,6 +97,7 @@ Events (all emitted to the `main` window):
 | event          | payload                                                        |
 | -------------- | -------------------------------------------------------------- |
 | `record_level` | `number` 0..1, the same meter the recorder uses                |
+| `live_ready`   | no payload — the transcriber is connected; until then only recording |
 | `live_partial` | `Segment { start, stop, text }` (centiseconds), replaces the previous partial |
 | `live_segment` | `Segment` final line, append it and clear the partial          |
 | `live_error`   | `{ message: string }` — the session is over                    |

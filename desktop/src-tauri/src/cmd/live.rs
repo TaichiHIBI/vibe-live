@@ -14,9 +14,9 @@ use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{Device, FromSample, Sample, SizedSample, Stream, SupportedStreamConfig};
-use eyre::{bail, eyre, Context, ContextCompat, Result};
+use eyre::{bail, eyre, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use rubato::{FastFixedIn, PolynomialDegree, Resampler};
 use serde::Deserialize;
@@ -24,7 +24,7 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_tungstenite::tungstenite::Message;
 
-use super::audio::{buffer_peak, get_output_device_and_config, AudioDevice, LevelMeter, StreamHandle};
+use super::audio::{buffer_peak, find_device, get_output_device_and_config, AudioDevice, LevelMeter, StreamHandle};
 use super::CommandError;
 use crate::error::LogError;
 use crate::ffmpeg::{get_local_time, get_vibe_temp_folder};
@@ -44,12 +44,14 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Model warm-up on the server before the first `ready`.
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// What the server needs to start transcribing; arrives with `live_connect`,
+/// after the model is loaded and the vocabulary prompt written, while the
+/// capture is already running.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveOptions {
     pub lang: Option<String>,
     pub vad_model: String,
-    pub recording_name: Option<String>,
     /// Whisper's initial prompt (a vocabulary list, say); ignored by engines without one.
     pub prompt: Option<String>,
     /// `fixed`, `auto` or `off`; None is the server's default (fixed).
@@ -83,6 +85,14 @@ impl Drop for Starting<'_> {
 struct LiveSession {
     streams: Vec<StreamHandle>,
     capture_tx: mpsc::Sender<Capture>,
+    /// Taken by `live_connect`; dropping it unconnected tells the pump the
+    /// session ends as a recording only.
+    connect_tx: Option<tokio::sync::oneshot::Sender<ConnectRequest>>,
+}
+
+struct ConnectRequest {
+    base_url: String,
+    options: LiveOptions,
 }
 
 enum Capture {
@@ -128,8 +138,7 @@ fn teardown(app_handle: &AppHandle) -> bool {
 pub async fn start_live(
     app_handle: AppHandle,
     devices: Vec<AudioDevice>,
-    options: LiveOptions,
-    server_state: State<'_, tokio::sync::Mutex<ServerState>>,
+    recording_name: Option<String>,
     live_state: State<'_, LiveState>,
 ) -> std::result::Result<(), CommandError> {
     if devices.is_empty() {
@@ -148,21 +157,11 @@ pub async fn start_live(
     if live_state.0.lock().map(|guard| guard.is_some()).unwrap_or(false) {
         return Err(already());
     }
-    let base_url = {
-        let state = server_state.lock().await;
-        let process = state.process.as_ref().ok_or_else(|| CommandError {
-            code: "no_model".to_string(),
-            message: "Please load model first".to_string(),
-        })?;
-        process.base_url()
-    };
 
-    // The socket first: a busy server or a missing VAD model is reported before
-    // any device is opened, and the meter never flickers for nothing.
-    let ws = open_session(&base_url, &options).await?;
-
-    let stem = options
-        .recording_name
+    // The capture starts now; the model, the prompt and the socket follow with
+    // `live_connect`, and the audio from in between is buffered and sent then,
+    // so the first sentence of a meeting is not lost to the preparation.
+    let stem = recording_name
         .as_deref()
         .map(crate::cmd::files::sanitize_filename_stem)
         .filter(|name| !name.is_empty())
@@ -171,6 +170,7 @@ pub async fn start_live(
 
     let (capture_tx, capture_rx) = mpsc::channel::<Capture>();
     let (audio_tx, audio_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<f32>>();
+    let (connect_tx, connect_rx) = tokio::sync::oneshot::channel::<ConnectRequest>();
     let meter = Arc::new(LevelMeter::new(app_handle.clone()));
 
     let (feeds, streams) = open_capture(&devices, &capture_tx, &meter)?;
@@ -184,7 +184,11 @@ pub async fn start_live(
     // In the state before the pump runs: a server error arriving first must find
     // something to tear down.
     if let Ok(mut guard) = live_state.0.lock() {
-        *guard = Some(LiveSession { streams, capture_tx });
+        *guard = Some(LiveSession {
+            streams,
+            capture_tx,
+            connect_tx: Some(connect_tx),
+        });
     }
     crate::meeting_prompt::recording_started(&app_handle);
 
@@ -192,8 +196,40 @@ pub async fn start_live(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    tauri::async_runtime::spawn(pump(app_handle, ws, audio_rx, mixer, wav_path, name));
+    tauri::async_runtime::spawn(pump(app_handle, connect_rx, audio_rx, mixer, wav_path, name));
     Ok(())
+}
+
+/// Second half of starting: the model is loaded and the prompt is known, so
+/// open the socket and let the buffered audio through.
+#[tauri::command]
+pub async fn live_connect(
+    options: LiveOptions,
+    server_state: State<'_, tokio::sync::Mutex<ServerState>>,
+    live_state: State<'_, LiveState>,
+) -> std::result::Result<(), CommandError> {
+    let base_url = {
+        let state = server_state.lock().await;
+        let process = state.process.as_ref().ok_or_else(|| CommandError {
+            code: "no_model".to_string(),
+            message: "Please load model first".to_string(),
+        })?;
+        process.base_url()
+    };
+    let connect_tx = live_state
+        .0
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.as_mut().and_then(|session| session.connect_tx.take()));
+    let Some(connect_tx) = connect_tx else {
+        return Err(CommandError {
+            code: "invalid_request".to_string(),
+            message: "No live capture is waiting to be connected".to_string(),
+        });
+    };
+    connect_tx
+        .send(ConnectRequest { base_url, options })
+        .map_err(|_| CommandError::from(eyre!("the live session ended before it could connect")))
 }
 
 /// One cpal stream per device, already playing, and the feed each one lands in.
@@ -208,8 +244,7 @@ fn open_capture(
     for (index, device) in devices.iter().enumerate() {
         tracing::debug!("Live capture from device: {} ({})", device.name, device.id);
         let (device, config) = if device.is_input {
-            let device_id: usize = device.id.parse().context("Failed to parse device ID")?;
-            let dev = host.devices()?.nth(device_id).context("Failed to get device by ID")?;
+            let dev = find_device(&host, device)?;
             let config = dev.default_input_config().context("Failed to get default input config")?;
             (dev, config)
         } else {
@@ -293,75 +328,123 @@ async fn open_session(base_url: &str, options: &LiveOptions) -> std::result::Res
 /// window, then report how the session ended.
 async fn pump(
     app_handle: AppHandle,
-    ws: WebSocket,
+    mut connect_rx: tokio::sync::oneshot::Receiver<ConnectRequest>,
     mut audio_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<f32>>,
     mixer: std::thread::JoinHandle<Result<()>>,
     wav_path: PathBuf,
     name: String,
 ) {
-    let (mut sink, mut stream) = ws.split();
     let mut segments: Vec<Segment> = Vec::new();
     let mut failure: Option<String> = None;
     let mut audio_done = false;
     let mut stopped = false;
-    let deadline = tokio::time::sleep(STOP_TIMEOUT);
-    tokio::pin!(deadline);
 
-    loop {
+    // Until the window says where to connect, the frames pile up here; the
+    // WAV is being written all along, so nothing is lost if it never does.
+    let mut buffered: Vec<Vec<f32>> = Vec::new();
+    let request = loop {
         tokio::select! {
-            frame = audio_rx.recv(), if !audio_done => match frame {
-                Some(samples) => {
-                    let bytes = samples.iter().flat_map(|sample| sample.to_le_bytes()).collect::<Vec<u8>>();
-                    if let Err(error) = sink.send(Message::Binary(bytes.into())).await {
-                        failure = Some(format!("live socket send failed: {error}"));
-                        break;
-                    }
-                }
+            frame = audio_rx.recv() => match frame {
+                Some(samples) => buffered.push(samples),
                 None => {
-                    // The mixer is done: ask for the flush and give it a deadline.
                     audio_done = true;
-                    deadline.as_mut().reset(tokio::time::Instant::now() + STOP_TIMEOUT);
-                    if let Err(error) = sink.send(Message::Text(json!({ "type": "stop" }).to_string().into())).await {
-                        failure = Some(format!("live socket send failed: {error}"));
-                        break;
-                    }
+                    break None;
                 }
             },
-            message = stream.next() => match message {
-                Some(Ok(Message::Text(text))) => match serde_json::from_str::<LiveEvent>(&text) {
-                    Ok(LiveEvent::Partial { start, end, text }) => {
-                        app_handle.emit_to("main", "live_partial", segment(start, end, text)).log_error();
-                    }
-                    Ok(LiveEvent::Segment { start, end, text }) => {
-                        let line = segment(start, end, text);
-                        app_handle.emit_to("main", "live_segment", line.clone()).log_error();
-                        segments.push(line);
-                    }
-                    Ok(LiveEvent::Error { message, .. }) => {
-                        failure = Some(message);
-                        break;
-                    }
-                    Ok(LiveEvent::Stopped) => {
-                        stopped = true;
-                        break;
-                    }
-                    Ok(LiveEvent::Ready) => {}
-                    Err(error) => tracing::warn!("ignoring unparsable live message: {error}"),
-                },
-                Some(Ok(Message::Close(_))) | None => break,
-                Some(Ok(_)) => {}
-                Some(Err(error)) => {
-                    failure = Some(format!("live socket failed: {error}"));
-                    break;
-                }
-            },
-            _ = &mut deadline, if audio_done => {
-                tracing::warn!("live session: no `stopped` from the server within {}s", STOP_TIMEOUT.as_secs());
+            request = &mut connect_rx => break request.ok(),
+        }
+    };
+    let ws = match request {
+        Some(request) => match open_session(&request.base_url, &request.options).await {
+            Ok(ws) => Some(ws),
+            Err(error) => {
+                failure = Some(error.message);
+                None
+            }
+        },
+        // Stopped, or torn down, before connecting: a recording without a transcript.
+        None => {
+            stopped = true;
+            None
+        }
+    };
+
+    if let Some(ws) = ws {
+        app_handle.emit_to("main", "live_ready", ()).log_error();
+        let (mut sink, mut stream) = ws.split();
+        let deadline = tokio::time::sleep(STOP_TIMEOUT);
+        tokio::pin!(deadline);
+        for samples in buffered.drain(..) {
+            let bytes = samples.iter().flat_map(|sample| sample.to_le_bytes()).collect::<Vec<u8>>();
+            if let Err(error) = sink.send(Message::Binary(bytes.into())).await {
+                failure = Some(format!("live socket send failed: {error}"));
                 break;
             }
         }
+        if audio_done {
+            // Everything was captured before the socket opened; ask for the flush at once.
+            deadline.as_mut().reset(tokio::time::Instant::now() + STOP_TIMEOUT);
+            if let Err(error) = sink.send(Message::Text(json!({ "type": "stop" }).to_string().into())).await {
+                failure = Some(format!("live socket send failed: {error}"));
+            }
+        }
+
+        while failure.is_none() {
+            tokio::select! {
+                frame = audio_rx.recv(), if !audio_done => match frame {
+                    Some(samples) => {
+                        let bytes = samples.iter().flat_map(|sample| sample.to_le_bytes()).collect::<Vec<u8>>();
+                        if let Err(error) = sink.send(Message::Binary(bytes.into())).await {
+                            failure = Some(format!("live socket send failed: {error}"));
+                            break;
+                        }
+                    }
+                    None => {
+                        // The mixer is done: ask for the flush and give it a deadline.
+                        audio_done = true;
+                        deadline.as_mut().reset(tokio::time::Instant::now() + STOP_TIMEOUT);
+                        if let Err(error) = sink.send(Message::Text(json!({ "type": "stop" }).to_string().into())).await {
+                            failure = Some(format!("live socket send failed: {error}"));
+                            break;
+                        }
+                    }
+                },
+                message = stream.next() => match message {
+                    Some(Ok(Message::Text(text))) => match serde_json::from_str::<LiveEvent>(&text) {
+                        Ok(LiveEvent::Partial { start, end, text }) => {
+                            app_handle.emit_to("main", "live_partial", segment(start, end, text)).log_error();
+                        }
+                        Ok(LiveEvent::Segment { start, end, text }) => {
+                            let line = segment(start, end, text);
+                            app_handle.emit_to("main", "live_segment", line.clone()).log_error();
+                            segments.push(line);
+                        }
+                        Ok(LiveEvent::Error { message, .. }) => {
+                            failure = Some(message);
+                            break;
+                        }
+                        Ok(LiveEvent::Stopped) => {
+                            stopped = true;
+                            break;
+                        }
+                        Ok(LiveEvent::Ready) => {}
+                        Err(error) => tracing::warn!("ignoring unparsable live message: {error}"),
+                    },
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(_)) => {}
+                    Some(Err(error)) => {
+                        failure = Some(format!("live socket failed: {error}"));
+                        break;
+                    }
+                },
+                _ = &mut deadline, if audio_done => {
+                    tracing::warn!("live session: no `stopped` from the server within {}s", STOP_TIMEOUT.as_secs());
+                    break;
+                }
+            }
+        }
+        let _ = sink.close().await;
     }
-    let _ = sink.close().await;
 
     // Whatever ended the loop, the capture must not outlive it, and the WAV has
     // to be finalised before the window hears about the file.

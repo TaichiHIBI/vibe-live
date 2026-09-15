@@ -31,7 +31,14 @@ function errorMessage(error: unknown) {
 	return object?.message || String(error)
 }
 
-export function useRecording(onBeforeStart: () => void) {
+export interface RecordingHooks {
+	/** The live capture is running: called with the provisional project name, before `isLive` flips. */
+	onLiveStarted?: (provisionalName: string) => void
+	/** `start_live` itself failed, so no capture and no session exist. */
+	onLiveStartFailed?: (message: string) => void
+}
+
+export function useRecording(onBeforeStart: () => void, hooks?: RecordingHooks) {
 	const preference = usePreferenceProvider()
 	const { setState: setErrorModal } = useContext(ErrorModalContext)
 	const [devices, setDevices] = useState<AudioDevice[]>([])
@@ -68,21 +75,25 @@ export function useRecording(onBeforeStart: () => void) {
 		setOutputDevice(device)
 	}
 
+	/**
+	 * Enumerate the devices afresh and re-resolve the two choices against them. Ids are device
+	 * names, so a choice survives replugging; one that is gone (or a stale index from older
+	 * versions) falls back to the default of its kind rather than to "none".
+	 */
 	async function loadAudioDevices() {
 		const newDevices = await invoke<AudioDevice[]>('get_audio_devices')
 		const inputs = newDevices.filter((device) => device.isInput)
 		const outputs = newDevices.filter((device) => !device.isInput)
-		setInputDevice(
-			savedInputDeviceId === null
-				? (inputs.find((device) => device.isDefault) ?? null)
-				: (inputs.find((device) => device.id === savedInputDeviceId) ?? null),
-		)
-		setOutputDevice(
-			savedOutputDeviceId === null
-				? (outputs.find((device) => device.isDefault) ?? null)
-				: (outputs.find((device) => device.id === savedOutputDeviceId) ?? null),
-		)
+		const pick = (list: AudioDevice[], saved: string | null) => {
+			if (saved === '') return null
+			return (saved !== null ? list.find((device) => device.id === saved) : undefined) ?? list.find((device) => device.isDefault) ?? null
+		}
+		const input = pick(inputs, savedInputDeviceId)
+		const output = pick(outputs, savedOutputDeviceId)
+		setInputDevice(input)
+		setOutputDevice(output)
 		setDevices(newDevices)
+		return { input, output }
 	}
 
 	useEffect(() => {
@@ -121,8 +132,10 @@ export function useRecording(onBeforeStart: () => void) {
 	}, [liveModel, preference.modelPath, preference.modelMetadata])
 	const livePromptable = liveModelMetadata?.capabilities.text_prompts !== false
 
-	function selectedDevices() {
-		return [inputDevice, outputDevice].filter((device): device is AudioDevice => device !== null)
+	/** The devices to open, enumerated now: what was plugged in since the panel opened counts. */
+	async function selectedDevices() {
+		const { input, output } = await loadAudioDevices()
+		return [input, output].filter((device): device is AudioDevice => device !== null)
 	}
 
 	async function startRecord() {
@@ -132,7 +145,7 @@ export function useRecording(onBeforeStart: () => void) {
 		setIsRecording(true)
 		try {
 			await invoke('start_record', {
-				devices: selectedDevices(),
+				devices: await selectedDevices(),
 				recordingName: recordingName.trim() || null,
 			})
 		} catch (error) {
@@ -155,8 +168,10 @@ export function useRecording(onBeforeStart: () => void) {
 	}
 
 	/**
-	 * Live mode: the model is loaded first, exactly as the transcribe queue does, then the capture
-	 * streams to it. The session ends with `live_finish` or `live_error`, which the session handles.
+	 * Live mode: the capture starts the moment the button is pressed; the model, the vocabulary
+	 * prompt and the socket are prepared while it already records, and the audio from in between is
+	 * sent once the session connects. It ends with `live_finish` or `live_error`, which the session
+	 * handles.
 	 */
 	async function startLive() {
 		if (liveStarting || isLive) return
@@ -169,7 +184,12 @@ export function useRecording(onBeforeStart: () => void) {
 		setLiveStarting(true)
 		startKeepAwake(KEEP_AWAKE.record)
 		onBeforeStart()
+		let capturing = false
 		try {
+			await invoke('start_live', { devices: await selectedDevices(), recordingName: recordingName.trim() || null })
+			capturing = true
+			hooks?.onLiveStarted?.(recordingName.trim() || 'Live')
+			setIsLive(true)
 			// The language was picked for the file model; a different live engine may spell it
 			// differently (Whisper "ja", Nemotron "ja-JP"), so ask the live model what it takes.
 			const metadata = modelPath === preference.modelPath ? preference.modelMetadata : await invoke<ModelMetadata>('get_model_metadata', { modelPath })
@@ -184,25 +204,29 @@ export function useRecording(onBeforeStart: () => void) {
 			})
 			if (loadResult === 'gpu_fallback') toast.warning(m.gpuFallbackToCpu(), { position: 'bottom-center', duration: 8000 })
 			const modelsFolder = await invoke<string>('get_models_folder')
-			await invoke('start_live', {
-				devices: selectedDevices(),
+			await invoke('live_connect', {
 				options: {
 					lang,
 					vadModel: `${modelsFolder}/${config.vadModelFilename}`,
-					recordingName: recordingName.trim() || null,
 					prompt,
 					...livePartialOptions(livePartialMode),
 				},
 			})
-			setIsLive(true)
 		} catch (error) {
-			stopKeepAwake(KEEP_AWAKE.record)
-			setIsLive(false)
 			console.error('startLive error: ', error)
 			setErrorModal?.({ log: errorMessage(error), open: true })
-			// A session the backend did open but the window lost track of would hold the model
-			// forever; ending it costs nothing when there is none.
-			void invoke('stop_live').catch(() => undefined)
+			if (capturing) {
+				// The capture is running without a transcriber: end it as a plain recording, which
+				// arrives as `live_finish` with the audio and no lines.
+				void invoke('stop_live').catch(() => undefined)
+			} else {
+				stopKeepAwake(KEEP_AWAKE.record)
+				setIsLive(false)
+				hooks?.onLiveStartFailed?.(errorMessage(error))
+				// A session the backend did open but the window lost track of would hold the model
+				// forever; ending it costs nothing when there is none.
+				void invoke('stop_live').catch(() => undefined)
+			}
 		} finally {
 			setLiveStarting(false)
 		}
@@ -252,6 +276,7 @@ export function useRecording(onBeforeStart: () => void) {
 	return {
 		devices,
 		setDevices,
+		reloadDevices: () => void loadAudioDevices(),
 		inputDevice,
 		outputDevice,
 		isRecording,

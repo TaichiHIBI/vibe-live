@@ -99,20 +99,31 @@ function scheduleLines(current: LiveSession) {
 }
 
 export const liveHandlers: CommandHandlerMap = {
-	// ({ devices, options: { lang, vadModel, recordingName } }) — resolves at once like the Rust command.
+	// ({ devices, recordingName }) — the capture; lines only start with `live_connect`.
 	start_live: (args) => {
 		console.info('[mock] start_live', args)
 		if (session) throw { code: 'busy', message: 'a live session is already open' }
-		const options = (args.options ?? {}) as Record<string, unknown>
 		const current: LiveSession = {
 			startedAt: Date.now(),
 			segments: [],
-			recordingName: typeof options.recordingName === 'string' && options.recordingName ? options.recordingName : null,
+			recordingName: typeof args.recordingName === 'string' && args.recordingName ? args.recordingName : null,
 			levelTimer: 0,
 			lineTimer: 0,
 		}
 		session = current
-		scheduleLines(current)
+		return undefined
+	},
+
+	// ({ options: { lang, vadModel, prompt, partialMode, partialIntervalMs } }) — the transcriber joins.
+	live_connect: (args) => {
+		console.info('[mock] live_connect', args)
+		const current = session
+		if (!current) throw { code: 'invalid_request', message: 'no live capture is waiting' }
+		window.setTimeout(() => {
+			if (session !== current) return
+			emitMockEvent('live_ready', null)
+			scheduleLines(current)
+		}, 800)
 		return undefined
 	},
 

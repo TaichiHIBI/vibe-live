@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from 'react'
 import { m } from '~/paraglide/messages.js'
 import Layout, { SIDEBAR_STORAGE_KEY, TOGGLE_SIDEBAR_EVENT } from '~/components/layout'
 import IdleHero from './components/idle-hero'
-import LiveView from './components/live-view'
 import PlayerBar from './components/player-bar'
 import RecentsSidebar from './components/recents-sidebar'
 import SessionView from './components/session-view'
@@ -52,14 +51,6 @@ function MainContent() {
 						transition={{ duration: 0.15, ease: 'easeOut' }}
 						className="flex min-h-0 flex-1 flex-col">
 						<IdleHero />
-					</motion.div>
-				) : mode === 'live' ? (
-					<motion.div
-						key="live"
-						exit={{ opacity: 0, y: -8 }}
-						transition={{ duration: 0.15, ease: 'easeOut' }}
-						className="flex min-h-0 flex-1 flex-col">
-						<LiveView />
 					</motion.div>
 				) : (
 					<motion.div
@@ -117,8 +108,9 @@ function useShowSidebar() {
 function PlayerSlot() {
 	const { queue } = useSession()
 	const selected = queue.selectedJob
-	// The source media exists as soon as a job does — listening while it transcribes is fine.
-	if (!selected) return null
+	// The source media exists as soon as a job does — listening while it transcribes is fine. A live
+	// session is the exception: its WAV is still being written.
+	if (!selected || selected.live) return null
 	return <PlayerBar key={selected.id} job={selected} />
 }
 

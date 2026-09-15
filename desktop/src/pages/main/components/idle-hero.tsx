@@ -72,8 +72,20 @@ function RecordPanel() {
 				'[&_label]:text-[11px] [&_label]:font-medium [&_label]:tracking-[0.08em] [&_label]:text-muted-foreground [&_label]:uppercase',
 			)}>
 			<div className="grid grid-cols-1 gap-3 sm:grid-cols-2 [&>div]:space-y-1.5 [&_button]:h-10 [&_button]:rounded-xl">
-				<AudioDeviceInput type="input" devices={recording.devices} device={recording.inputDevice} setDevice={recording.setInputDevice} />
-				<AudioDeviceInput type="output" devices={recording.devices} device={recording.outputDevice} setDevice={recording.setOutputDevice} />
+				<AudioDeviceInput
+					type="input"
+					devices={recording.devices}
+					device={recording.inputDevice}
+					setDevice={recording.setInputDevice}
+					onOpen={recording.reloadDevices}
+				/>
+				<AudioDeviceInput
+					type="output"
+					devices={recording.devices}
+					device={recording.outputDevice}
+					setDevice={recording.setOutputDevice}
+					onOpen={recording.reloadDevices}
+				/>
 			</div>
 			{/* Live: transcribe while capturing instead of recording first. A span, not a label, so the */}
 			{/* eyebrow styling above stays with the device pickers. */}

@@ -326,8 +326,9 @@ function RecentRow({
 
 /** One job from the running session — it shows up the moment it is queued, not when it is saved. */
 function SessionRow({ job, active, onOpen }: { job: Job; active: boolean; onOpen: () => void }) {
-	const status =
-		job.status === 'running'
+	const status = job.live
+		? m.liveLabel()
+		: job.status === 'running'
 			? `${m.transcribing()} ${Math.round(job.progress)}%`
 			: job.status === 'queued'
 				? m.queued()
@@ -341,11 +342,13 @@ function SessionRow({ job, active, onOpen }: { job: Job; active: boolean; onOpen
 		<div className={cn('group relative flex items-center rounded-xl transition-colors duration-150', active ? 'bg-muted' : 'hover:bg-muted/60')}>
 			<button type="button" onClick={onOpen} title={job.name} className="min-w-0 flex-1 cursor-pointer px-3 py-2 text-start">
 				<p className="truncate text-[13px] font-medium text-foreground">{job.name}</p>
+				{/* A div, not a p: the spinner is a div and must not sit inside a paragraph. */}
 				{status && (
-					<p className="mt-0.5 flex items-center gap-1.5 truncate text-[11px] text-muted-foreground">
-						{job.status === 'running' && <Spinner className="h-3 w-3" />}
+					<div className="mt-0.5 flex items-center gap-1.5 truncate text-[11px] text-muted-foreground">
+						{job.status === 'running' && !job.live && <Spinner className="h-3 w-3" />}
+						{job.live && <span aria-hidden className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-destructive" />}
 						{status}
-					</p>
+					</div>
 				)}
 			</button>
 		</div>

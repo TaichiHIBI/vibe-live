@@ -44,15 +44,17 @@ pub fn get_audio_devices() -> Result<Vec<AudioDevice>> {
 
     let devices = host.devices()?;
     tracing::debug!("Devices: ");
-    for (device_index, device) in devices.enumerate() {
+    for device in devices {
         let name = device.description()?.to_string();
         let is_default_in = default_in.as_ref().is_ok_and(|d| d == &name);
         let is_default_out = default_out.as_ref().is_ok_and(|d| d == &name);
 
+        // The id is the name: an index shifts as soon as a headset is plugged in or pulled
+        // out, and a stale index would quietly open the wrong device.
         let audio_device = AudioDevice {
             is_default: is_default_in || is_default_out,
             is_input: device.supports_input(),
-            id: device_index.to_string(),
+            id: name.clone(),
             name,
         };
         audio_devices.push(audio_device);
@@ -167,8 +169,7 @@ pub async fn start_record(app_handle: AppHandle, devices: Vec<AudioDevice>, reco
 
         let is_input = device.is_input;
         let (device, config) = if is_input {
-            let device_id: usize = device.id.parse().context("Failed to parse device ID")?;
-            let dev = host.devices()?.nth(device_id).context("Failed to get device by ID")?;
+            let dev = find_device(&host, &device)?;
             let config = dev.default_input_config().context("Failed to get default input config")?;
             (dev, config)
         } else {
@@ -300,31 +301,40 @@ pub async fn start_record(app_handle: AppHandle, devices: Vec<AudioDevice>, reco
     Ok(())
 }
 
-#[allow(unused_variables)]
+/// The device the picker meant, enumerated afresh: by name and direction, else the default of
+/// that direction (the saved choice may be a device that is no longer plugged in, or a leftover
+/// index from before ids were names).
+pub(crate) fn find_device(host: &cpal::Host, wanted: &AudioDevice) -> Result<Device> {
+    let key = if wanted.name.is_empty() { &wanted.id } else { &wanted.name };
+    let found = host
+        .devices()?
+        .find(|device| device.supports_input() == wanted.is_input && device.description().is_ok_and(|d| d.to_string() == *key));
+    if let Some(device) = found {
+        return Ok(device);
+    }
+    tracing::warn!(
+        "audio device {key:?} not found; using the default {}",
+        if wanted.is_input { "input" } else { "output" }
+    );
+    if wanted.is_input {
+        host.default_input_device().context("Failed to get default input device")
+    } else {
+        host.default_output_device().context("Failed to get default output device")
+    }
+}
+
+/// The output device to record from, with its config. On macOS the stream is a loopback tap on
+/// that device, so a headset chosen in the picker is what gets recorded — not whatever the system
+/// happens to route sound to.
 pub(crate) fn get_output_device_and_config(
     host: &cpal::Host,
     audio_device: &AudioDevice,
 ) -> Result<(Device, SupportedStreamConfig)> {
-    // On macOS, use the default output device directly — cpal's loopback support
-    // requires this path to build an input stream from an output device.
-    #[cfg(target_os = "macos")]
-    {
-        let device = host.default_output_device().context("Failed to get default output device")?;
-        let config = device
-            .default_output_config()
-            .context("Failed to get default output config")?;
-        Ok((device, config))
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let device_id: usize = audio_device.id.parse().context("Failed to parse device ID")?;
-        let device = host.devices()?.nth(device_id).context("Failed to get device by ID")?;
-        let config = device
-            .default_output_config()
-            .context("Failed to get default output config")?;
-        Ok((device, config))
-    }
+    let device = find_device(host, audio_device)?;
+    let config = device
+        .default_output_config()
+        .context("Failed to get default output config")?;
+    Ok((device, config))
 }
 
 fn build_input_stream_typed<T>(

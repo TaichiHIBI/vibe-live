@@ -141,6 +141,7 @@ async fn main() -> Result<()> {
             cmd::audio::get_audio_devices,
             cmd::audio::start_record,
             cmd::live::start_live,
+            cmd::live::live_connect,
             cmd::live::stop_live,
             cmd::app::get_models_folder,
             cmd::app::get_logs_folder,

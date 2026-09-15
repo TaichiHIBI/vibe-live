@@ -71,6 +71,14 @@ export interface Job {
 	exported?: AutoExportResult
 	/** Whisper prompt for this run only (an AI-written glossary, say). */
 	initPrompt?: string
+	/** An open live session: lines stream in from the capture while it runs (see docs/LIVE.md). */
+	live?: boolean
+	/** The live transcriber is connected; until then the session only records. */
+	liveReady?: boolean
+	/** The live utterance in progress; replaced by every `live_partial`, cleared by the next `live_segment`. */
+	partial?: Segment | null
+	/** Wall clock of the live capture start, for the elapsed counter. */
+	startedAt?: number
 }
 
 /** A run of two or more files: what batch users watch instead of the transcripts. */
@@ -130,6 +138,17 @@ export interface TranscribeQueue {
 	cancelCurrent: () => void
 	cancelAll: () => void
 	reset: () => void
+	/** The open live session's job, null when none is running. */
+	liveJobId: string | null
+	/**
+	 * Add and select a running job for a live session that just started capturing. File jobs enqueued
+	 * while it is open wait: the server serves one transcription at a time.
+	 */
+	startLiveJob: (provisionalName: string) => string
+	/** The live session ended and its project is saved: the job becomes an ordinary finished one. */
+	finishLiveJob: (id: string, patch: { name: string; path: string; savedPath: string; segments: Segment[] }) => void
+	/** The live session ended without a project. */
+	failLiveJob: (id: string, message: string) => void
 	/** Progress across a run of several files, null for a single file or when idle. */
 	batch: BatchProgress | null
 	/** The finished card's content, until dismissed. */
@@ -223,6 +242,8 @@ export function useTranscribeQueue(): TranscribeQueue {
 	const abortCurrentRef = useRef(false)
 	const abortAllRef = useRef(false)
 	const projectOperationsRef = useRef(new Map<string, Promise<unknown>>())
+	const [liveJobId, setLiveJobId] = useState<string | null>(null)
+	const liveIdRef = useRef<string | null>(null)
 
 	useEffect(() => {
 		preferenceRef.current = preference
@@ -279,6 +300,27 @@ export function useTranscribeQueue(): TranscribeQueue {
 				commit(jobsRef.current.map((job) => (job.id === id ? { ...job, segments: [...job.segments, payload] } : job)))
 			}),
 		)
+		// The live session's lines (docs/LIVE.md): a partial replaces the previous one, a final line
+		// appends and clears it.
+		unlisteners.push(
+			listen('live_ready', () => {
+				const id = liveIdRef.current
+				if (id) patch(id, { liveReady: true })
+			}),
+		)
+		unlisteners.push(
+			listen<Segment>('live_partial', ({ payload }) => {
+				const id = liveIdRef.current
+				if (id) patch(id, { partial: payload })
+			}),
+		)
+		unlisteners.push(
+			listen<Segment>('live_segment', ({ payload }) => {
+				const id = liveIdRef.current
+				if (!id) return
+				commit(jobsRef.current.map((job) => (job.id === id ? { ...job, segments: [...job.segments, payload], partial: null } : job)))
+			}),
+		)
 
 		return () => {
 			unlisteners.forEach((promise) => promise.then((unlisten) => unlisten()))
@@ -287,7 +329,11 @@ export function useTranscribeQueue(): TranscribeQueue {
 
 	const failPending = useCallback(
 		(message: string) => {
-			commit(jobsRef.current.map((job) => (job.status === 'queued' || job.status === 'running' ? { ...job, status: 'error', error: message } : job)))
+			commit(
+				jobsRef.current.map((job) =>
+					!job.live && (job.status === 'queued' || job.status === 'running') ? { ...job, status: 'error', error: message } : job,
+				),
+			)
 		},
 		[commit],
 	)
@@ -364,6 +410,8 @@ export function useTranscribeQueue(): TranscribeQueue {
 	)
 
 	const runLoop = useCallback(async () => {
+		// The live session holds the model lease; files enqueued meanwhile stay queued until it ends.
+		if (liveIdRef.current) return
 		if (runningRef.current) return
 		runningRef.current = true
 		setRunning(true)
@@ -606,6 +654,7 @@ export function useTranscribeQueue(): TranscribeQueue {
 		(record: TranscriptRecord, savedPath: string, audioPath?: string | null, source?: ProjectSource) => {
 			// Opening an older Recent while a run is active remains disallowed. A recording finish is
 			// different: its durable project must enter the session even if another job is running.
+			// A live session is not a run in that sense: its job keeps streaming beside what is opened.
 			if (runningRef.current && source !== 'record') return null
 			const id = nextJobId()
 			const job: Job = {
@@ -624,11 +673,64 @@ export function useTranscribeQueue(): TranscribeQueue {
 				speakerNames: record.speakerNames,
 			}
 			pinnedRef.current = true
-			commit(runningRef.current ? [...jobsRef.current, job] : [job])
+			commit(runningRef.current || liveIdRef.current ? [...jobsRef.current, job] : [job])
 			select(job.id)
 			return id
 		},
 		[commit, select],
+	)
+
+	const startLiveJob = useCallback(
+		(provisionalName: string) => {
+			const id = nextJobId()
+			const job: Job = {
+				id,
+				name: provisionalName,
+				path: '',
+				source: 'record',
+				status: 'running',
+				progress: 0,
+				segments: [],
+				live: true,
+				liveReady: false,
+				partial: null,
+				startedAt: Date.now(),
+			}
+			liveIdRef.current = id
+			setLiveJobId(id)
+			commit([...jobsRef.current, job])
+			select(id)
+			return id
+		},
+		[commit, select],
+	)
+
+	/** The session is over: release the lease and run whatever waited behind it. */
+	const endLive = useCallback(
+		(id: string) => {
+			if (liveIdRef.current === id) {
+				liveIdRef.current = null
+				setLiveJobId(null)
+			}
+			if (jobsRef.current.some((job) => job.status === 'queued')) void runLoop()
+		},
+		[runLoop],
+	)
+
+	const finishLiveJob = useCallback(
+		(id: string, changes: { name: string; path: string; savedPath: string; segments: Segment[] }) => {
+			patch(id, { ...changes, status: 'done', live: false, liveReady: false, partial: null, progress: 100, error: undefined })
+			endLive(id)
+		},
+		[endLive, patch],
+	)
+
+	const failLiveJob = useCallback(
+		(id: string, message: string) => {
+			patch(id, { status: 'error', live: false, liveReady: false, partial: null, progress: 0, error: message })
+			endLive(id)
+		},
+		[endLive, patch],
 	)
 
 	/**
@@ -741,8 +843,10 @@ export function useTranscribeQueue(): TranscribeQueue {
 	const reset = useCallback(() => {
 		if (runningRef.current) cancelAll()
 		pinnedRef.current = false
-		commit([])
-		select(null)
+		// A live session is stopped from its banner, never swept away with the finished results.
+		const kept = jobsRef.current.filter((job) => job.live)
+		commit(kept)
+		select(kept[0]?.id ?? null)
 	}, [cancelAll, commit, select])
 
 	const selectedJob = jobs.find((job) => job.id === selectedId) ?? null
@@ -770,6 +874,10 @@ export function useTranscribeQueue(): TranscribeQueue {
 		cancelCurrent,
 		cancelAll,
 		reset,
+		liveJobId,
+		startLiveJob,
+		finishLiveJob,
+		failLiveJob,
 		batch,
 		batchSummary,
 		dismissBatchSummary,
