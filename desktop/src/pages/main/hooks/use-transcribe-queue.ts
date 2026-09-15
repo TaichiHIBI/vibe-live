@@ -40,6 +40,8 @@ export type JobStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled'
 export interface EnqueueItem extends NamedPath {
 	/** Title of the project this input came from; used verbatim, without a source prefix. */
 	projectName?: string
+	/** Whisper prompt for this run only, in place of the one in the settings. */
+	initPrompt?: string
 }
 
 export interface Job {
@@ -67,6 +69,8 @@ export interface Job {
 	speakerNames?: SpeakerNames
 	/** What auto-export did with this transcript, when it ran. */
 	exported?: AutoExportResult
+	/** Whisper prompt for this run only (an AI-written glossary, say). */
+	initPrompt?: string
 }
 
 /** A run of two or more files: what batch users watch instead of the transcripts. */
@@ -420,10 +424,12 @@ export function useTranscribeQueue(): TranscribeQueue {
 				const startedAt = performance.now()
 				trackTranscribeStarted('main', next.path)
 				try {
+					const capabilities = preferenceRef.current.modelMetadata?.capabilities
 					const result = await invoke<Transcript>('transcribe', {
 						options: {
 							path: next.path,
-							...withoutUnsupportedOptions(preferenceRef.current.modelOptions, preferenceRef.current.modelMetadata?.capabilities),
+							...withoutUnsupportedOptions(preferenceRef.current.modelOptions, capabilities),
+							...(next.initPrompt && capabilities?.text_prompts !== false ? { init_prompt: next.initPrompt } : {}),
 							...shared,
 						},
 					})
@@ -586,6 +592,7 @@ export function useTranscribeQueue(): TranscribeQueue {
 				status: 'queued',
 				progress: 0,
 				segments: [],
+				...(file.initPrompt ? { initPrompt: file.initPrompt } : {}),
 			}))
 			commit([...jobsRef.current, ...created])
 			if (!selectedIdRef.current) select(created[0].id)

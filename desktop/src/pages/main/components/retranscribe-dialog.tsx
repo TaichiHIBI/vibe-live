@@ -3,8 +3,12 @@ import { m } from '~/paraglide/messages.js'
 import LanguageInput from '~/components/language-input'
 import { Button } from '~/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '~/components/ui/dialog'
+import { Input } from '~/components/ui/input'
 import { Switch } from '~/components/ui/switch'
+import { useState } from 'react'
 import { openSettingsSection } from '~/lib/app'
+import { CONFIG_KEYS } from '~/lib/config-keys'
+import { usePersisted } from '~/lib/config-store'
 import { useModelGates } from '~/providers/model-gates'
 import { getFriendlyModelName } from '~/lib/model'
 import { usePreferenceProvider } from '~/providers/preference'
@@ -16,6 +20,13 @@ function OptionRow({ label, checked, onChange }: { label: string; checked: boole
 			<Switch checked={checked} onCheckedChange={onChange} />
 		</div>
 	)
+}
+
+export interface RetranscribeChoices {
+	/** Ask the AI connection for a vocabulary prompt before the run. */
+	glossary: boolean
+	/** What the recording is about, for that prompt. */
+	topic: string
 }
 
 /**
@@ -31,9 +42,13 @@ export default function RetranscribeDialog({
 	open: boolean
 	onOpenChange: (open: boolean) => void
 	name: string
-	onConfirm: () => void
+	onConfirm: (choices: RetranscribeChoices) => void
 }) {
 	const preference = usePreferenceProvider()
+	// A glossary is a Whisper prompt, so the row only shows for a model that reads prompts.
+	const promptable = preference.modelMetadata?.capabilities.text_prompts !== false
+	const [glossary, setGlossary] = usePersisted<boolean>(CONFIG_KEYS.aiGlossaryOnRetranscribe, false)
+	const [topic, setTopic] = useState(name)
 	// Same gate as the options popover: the models are fetched before either switch takes effect.
 	const modelGates = useModelGates()
 	// Renamed models keep their custom label; otherwise fall back to the file's friendly name.
@@ -65,7 +80,20 @@ export default function RetranscribeDialog({
 							checked={preference.stableTimestampsEnabled}
 							onChange={(value) => void modelGates.toggleStableTimestamps(value)}
 						/>
+						{promptable && <OptionRow label={m.aiGlossary()} checked={glossary} onChange={setGlossary} />}
 					</div>
+					{promptable && glossary && (
+						<div className="space-y-1.5">
+							<Input
+								value={topic}
+								onChange={(event) => setTopic(event.target.value)}
+								placeholder={m.aiGlossaryTopicPlaceholder()}
+								aria-label={m.aiGlossaryTopic()}
+								className="h-10 rounded-xl"
+							/>
+							<p className="text-xs text-muted-foreground">{m.aiGlossaryInfo()}</p>
+						</div>
+					)}
 
 					<button
 						type="button"
@@ -91,7 +119,7 @@ export default function RetranscribeDialog({
 						<Button
 							onClick={() => {
 								onOpenChange(false)
-								onConfirm()
+								onConfirm({ glossary: promptable && glossary, topic })
 							}}>
 							{m.reTranscribe()}
 						</Button>

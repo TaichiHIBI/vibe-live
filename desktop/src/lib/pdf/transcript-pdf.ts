@@ -1,6 +1,8 @@
 import { createElement } from 'react'
 import type { Segment } from '~/lib/transcript'
 import type { TranscriptExportOptions } from '~/lib/transcript-export'
+import cjkBoldUrl from '~/assets/fonts/NotoSansJP-Bold.otf?url'
+import cjkRegularUrl from '~/assets/fonts/NotoSansJP-Regular.otf?url'
 import boldUrl from '~/assets/fonts/Rubik-Bold.ttf?url'
 import regularUrl from '~/assets/fonts/Rubik-Regular.ttf?url'
 
@@ -17,7 +19,7 @@ export interface TranscriptPdfLabels {
  * the document that uses it are imported on the first export rather than at startup.
  */
 export async function transcriptToPdf(segments: Segment[], summary: string, options: TranscriptExportOptions, labels: TranscriptPdfLabels) {
-	const [{ Font, pdf }, { PDF_FONT, TranscriptDocument }] = await Promise.all([import('@react-pdf/renderer'), import('./transcript-document')])
+	const [{ Font, pdf }, { PDF_FONT, PDF_FONT_CJK, TranscriptDocument }] = await Promise.all([import('@react-pdf/renderer'), import('./transcript-document')])
 	// Rubik carries Latin, Hebrew and Cyrillic in one family, so a mixed transcript needs no font
 	// switching. Registering again is harmless; react-pdf keeps the last source for each weight.
 	Font.register({
@@ -25,6 +27,14 @@ export async function transcriptToPdf(segments: Segment[], summary: string, opti
 		fonts: [
 			{ src: regularUrl, fontWeight: 400 },
 			{ src: boldUrl, fontWeight: 700 },
+		],
+	})
+	// Only fetched when a document is set in it (see `pdfFontFor`), so the 9 MB costs nothing otherwise.
+	Font.register({
+		family: PDF_FONT_CJK,
+		fonts: [
+			{ src: cjkRegularUrl, fontWeight: 400 },
+			{ src: cjkBoldUrl, fontWeight: 700 },
 		],
 	})
 	// `pdf()` is typed for a <Document> element; ours renders one, which the types cannot see.

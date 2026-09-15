@@ -4,6 +4,20 @@ import { includesSummary, includesTranscript, segmentMetadata, type TranscriptEx
 
 /** Registered by `registerPdfFonts` in the app, and from disk in the layout tests. */
 export const PDF_FONT = 'Rubik'
+/**
+ * Rubik has no CJK glyphs, so a transcript with any Japanese in it is set in Noto Sans JP instead
+ * (its Japanese subset: kana, the JIS kanji, and Latin for whatever English is mixed in). Chosen
+ * per document: react-pdf has no per-glyph fallback between families.
+ */
+export const PDF_FONT_CJK = 'Noto Sans JP'
+
+const CJK = /[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/
+
+/** The family the whole document is set in. */
+export function pdfFontFor(texts: Iterable<string>) {
+	for (const text of texts) if (CJK.test(text)) return PDF_FONT_CJK
+	return PDF_FONT
+}
 
 /** The same palettes the HTML export uses, so the file matches the preview beside it. */
 const PALETTES = {
@@ -13,10 +27,10 @@ const PALETTES = {
 
 type Palette = (typeof PALETTES)[keyof typeof PALETTES]
 
-function sheet(palette: Palette, direction: 'rtl' | 'ltr') {
+function sheet(palette: Palette, direction: 'rtl' | 'ltr', font: string) {
 	const align = direction === 'rtl' ? ('right' as const) : ('left' as const)
 	return StyleSheet.create({
-		page: { paddingVertical: 52, paddingHorizontal: 52, backgroundColor: palette.background, fontFamily: PDF_FONT },
+		page: { paddingVertical: 52, paddingHorizontal: 52, backgroundColor: palette.background, fontFamily: font },
 		title: { fontSize: 20, fontWeight: 700, color: palette.accent, textAlign: 'center', marginBottom: 10 },
 		heading: { fontSize: 13, fontWeight: 700, color: palette.ink, textAlign: align, direction, marginTop: 18, marginBottom: 2 },
 		block: { marginTop: 12 },
@@ -53,8 +67,12 @@ export interface TranscriptDocumentProps {
  */
 export function TranscriptDocument({ segments, summary, options, labels }: TranscriptDocumentProps) {
 	const palette = PALETTES[options.theme === 'dark' ? 'dark' : 'light']
-	const styles = sheet(palette, options.direction)
 	const title = options.title.trim()
+	const styles = sheet(
+		palette,
+		options.direction,
+		pdfFontFor([title, summary, labels.transcript, labels.summary, ...segments.map((segment) => segment.text)]),
+	)
 	const both = options.content === 'both'
 	const showTranscript = includesTranscript(options.content)
 	const showSummary = includesSummary(options.content) && Boolean(summary.trim())

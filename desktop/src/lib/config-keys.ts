@@ -40,6 +40,8 @@ export const CONFIG_KEYS = {
 	projectsPath: 'transcription.projectsPath',
 	/** Export every finished transcript automatically: formats, destination, replace rule. */
 	autoExport: 'transcription.autoExport',
+	/** Re-transcribe: have the AI connection write a vocabulary prompt from the topic and the old transcript. */
+	aiGlossaryOnRetranscribe: 'transcription.aiGlossaryOnRetranscribe',
 
 	// Recording
 	inputDeviceId: 'recording.inputDeviceId',
@@ -48,6 +50,16 @@ export const CONFIG_KEYS = {
 	recordingShortcut: 'recording.shortcut',
 	meetingDetectionEnabled: 'recording.meetingDetectionEnabled',
 	autoTranscribeAfterRecording: 'recording.autoTranscribeAfterRecording',
+	/** Transcribe while capturing instead of recording to a file first. */
+	liveTranscriptionEnabled: 'recording.liveTranscription',
+	/** Model for live transcription; empty means the file model (`model.path`). */
+	liveModelPath: 'recording.liveModelPath',
+	/** How the line in progress is refreshed: 'off', 'auto', or a fixed number of milliseconds. */
+	livePartialMode: 'recording.livePartialMode',
+	/** Live: have the AI connection write a vocabulary prompt from the topic before starting. */
+	liveGlossary: 'recording.liveGlossary',
+	/** Live: what the recording is about, for that prompt. */
+	liveTopic: 'recording.liveTopic',
 
 	// Reading the transcript
 	textAreaDirection: 'transcript.textDirection',

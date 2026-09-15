@@ -21,6 +21,52 @@ let store: Store | null = null
 const cache = new Map<string, unknown>()
 const listeners = new Map<string, Set<() => void>>()
 
+/**
+ * Values this window wrote that the store has not echoed back yet. The plugin confirms every
+ * `set` with a change event, over IPC, so while someone types "あい" the confirmation of "あ" can
+ * land after the cache already holds "あい" — and applying it would put the field back a
+ * character, which also breaks an IME composition in progress. Echoes are matched off and dropped.
+ */
+const ownWrites = new Map<string, unknown[]>()
+const OWN_WRITES_CAP = 64
+
+/** Exported for the unit test; the store path calls it from `writeConfig`. */
+export function recordOwnWrite(key: string, value: unknown) {
+	lastOwnWriteAt.set(key, Date.now())
+	const queue = ownWrites.get(key) ?? []
+	queue.push(value)
+	if (queue.length > OWN_WRITES_CAP) queue.shift()
+	ownWrites.set(key, queue)
+}
+
+/**
+ * When each key was last written from this window. The store's autosave lands on disk ~300 ms
+ * after a write, and the Rust file watcher compares that file with the plugin's memory — which
+ * by then can already hold the next keystroke. That looks like an external edit, the plugin
+ * reloads the older file, and the field is rolled back mid-word (an IME composition dies with it).
+ * A key written this recently keeps this window's value, and the value is written down again so
+ * the file catches up.
+ */
+const lastOwnWriteAt = new Map<string, number>()
+export const OWN_WRITE_GRACE_MS = 3_000
+
+/** True when this window wrote `key` within the grace period; such keys ignore file reloads. */
+export function recentlyWrittenHere(key: string, now = Date.now()) {
+	return now - (lastOwnWriteAt.get(key) ?? 0) < OWN_WRITE_GRACE_MS
+}
+
+/** True when a change event is the store confirming this window's own write; consumes the entry. */
+export function consumeOwnEcho(key: string, value: unknown) {
+	const queue = ownWrites.get(key)
+	if (!queue || queue.length === 0) return false
+	const index = queue.findIndex((written) => JSON.stringify(written) === JSON.stringify(value))
+	if (index < 0) return false
+	// Everything before it was superseded before its echo arrived; those echoes are stale too.
+	queue.splice(0, index + 1)
+	if (queue.length === 0) ownWrites.delete(key)
+	return true
+}
+
 function notify(key: string) {
 	for (const listener of listeners.get(key) ?? []) listener()
 }
@@ -32,6 +78,7 @@ export async function loadConfigStore() {
 		store = await load(config.storeFilename, { autoSave: 300, defaults: {} })
 		for (const [key, value] of await store.entries()) cache.set(key, value)
 		await store.onChange((key, value) => {
+			if (consumeOwnEcho(key, value)) return
 			if (value === undefined) cache.delete(key)
 			else cache.set(key, value)
 			notify(key)
@@ -51,6 +98,18 @@ function applyExternalConfig(next: Record<string, unknown> | null) {
 		const before = cache.get(key)
 		const after = incoming[key]
 		if (JSON.stringify(before) === JSON.stringify(after)) continue
+		if (recentlyWrittenHere(key)) {
+			// Our own save racing the typing, not an edit from outside: keep what is on screen and
+			// put it back into the store, which the reload just reset to the older file.
+			if (cache.has(key)) {
+				recordOwnWrite(key, before)
+				void store?.set(key, before)
+			} else {
+				recordOwnWrite(key, undefined)
+				void store?.delete(key)
+			}
+			continue
+		}
 		if (key in incoming) cache.set(key, after)
 		else cache.delete(key)
 		notify(key)
@@ -65,6 +124,7 @@ export function writeConfig<T>(key: string, value: T) {
 	cache.set(key, value)
 	notify(key)
 	// Fire and forget, like the old localStorage write: the screen must not wait on the disk.
+	if (store) recordOwnWrite(key, value)
 	void store?.set(key, value)
 }
 
@@ -72,6 +132,7 @@ export function writeConfig<T>(key: string, value: T) {
 export function deleteConfig(key: string) {
 	cache.delete(key)
 	notify(key)
+	if (store) recordOwnWrite(key, undefined)
 	void store?.delete(key)
 }
 

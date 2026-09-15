@@ -1,6 +1,7 @@
 mod diarization;
 mod form;
 pub(crate) mod format;
+mod live;
 mod routes;
 mod stream;
 mod transcription;
@@ -145,6 +146,7 @@ pub async fn serve(
             delete(routes::models::unload_model).get(routes::models::list_models),
         )
         .route("/v1/audio/transcriptions", post(routes::transcriptions::transcriptions))
+        .route("/v1/audio/live", get(live::live))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()))
         .layer(DefaultBodyLimit::max(MAX_UPLOAD_SIZE))
         .layer(TraceLayer::new_for_http())

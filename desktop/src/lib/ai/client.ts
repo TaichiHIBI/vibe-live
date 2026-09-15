@@ -11,6 +11,12 @@ export interface AiClient {
 	ask(prompt: string): Promise<string>
 	/** The answer as it arrives; resolves with the whole text. */
 	stream(prompt: string, onToken: (text: string) => void): Promise<string>
+	/**
+	 * Let go of the model's memory when there is one to let go of: a local server keeps the last
+	 * model loaded for minutes, and a one-off task should not leave it sitting on the GPU beside
+	 * the speech model. A no-op for hosted APIs.
+	 */
+	release(): Promise<void>
 }
 
 export function outputTokens(contextTokens: number) {
@@ -131,6 +137,15 @@ class Ollama implements AiClient {
 		if (!response.ok) throw await failure('Ollama', response)
 		return (await response.json())?.response ?? ''
 	}
+	async release() {
+		// An empty prompt with keep_alive 0 is Ollama's documented way to unload a model now.
+		const response = await fetch(`${this.connection.ollamaBaseUrl.replace(/\/+$/, '')}/api/generate`, {
+			method: 'POST',
+			headers: this.headers(),
+			body: JSON.stringify({ model: this.connection.model, keep_alive: 0 }),
+		})
+		if (!response.ok) throw await failure('Ollama', response)
+	}
 	async stream(prompt: string, onToken: (text: string) => void) {
 		const response = await fetch(`${this.connection.ollamaBaseUrl.replace(/\/+$/, '')}/api/generate`, {
 			method: 'POST',
@@ -198,6 +213,9 @@ class OpenAICompatible implements AiClient {
 		})
 		return text
 	}
+	async release() {
+		// Nothing to unload behind a hosted API.
+	}
 }
 
 class Claude implements AiClient {
@@ -236,6 +254,9 @@ class Claude implements AiClient {
 			}
 		})
 		return text
+	}
+	async release() {
+		// Nothing to unload behind a hosted API.
 	}
 }
 

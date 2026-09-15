@@ -46,6 +46,7 @@ async fn main() -> Result<()> {
     let mut builder = tauri::Builder::default()
         .manage(tray::TrayState::default())
         .manage(keepawake::KeepAwake::new())
+        .manage(cmd::live::LiveState::default())
         .manage(tokio::sync::Mutex::<Option<handoff::HandoffState>>::new(None))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
@@ -139,6 +140,8 @@ async fn main() -> Result<()> {
             cmd::files::get_default_projects_path,
             cmd::audio::get_audio_devices,
             cmd::audio::start_record,
+            cmd::live::start_live,
+            cmd::live::stop_live,
             cmd::app::get_models_folder,
             cmd::app::get_logs_folder,
             cmd::app::show_log_path,

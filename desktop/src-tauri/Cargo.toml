@@ -52,6 +52,10 @@ futures = "0.3.31"
 futures-util = "0.3"
 cpal = { git = "https://github.com/thewh1teagle/cpal", branch = "feat/macos-system-audio-permission-check" }
 hound = "3.5.1"
+# Live transcription: the capture is resampled to 16 kHz in-process and streamed
+# to vibe-server over a WebSocket (see docs/LIVE.md).
+rubato = "0.16"
+tokio-tungstenite = "0.30"
 rand = "0.9.2"
 # Anonymous, locally generated analytics install id
 uuid = { version = "1", features = ["v4"] }

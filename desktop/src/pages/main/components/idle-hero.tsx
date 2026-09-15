@@ -1,84 +1,22 @@
-import { listen } from '@tauri-apps/api/event'
 import { AnimatePresence, motion } from 'framer-motion'
-import { FolderOpen, Link2, Mic, Plus, Square, Upload, X } from 'lucide-react'
+import { AudioLines, FolderOpen, Link2, Mic, Plus, Square, Upload, X } from 'lucide-react'
 import { siFacebook, siInstagram, siTiktok, siX, siYoutube } from 'simple-icons'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect } from 'react'
 import { m } from '~/paraglide/messages.js'
 import AudioDeviceInput from '~/components/audio-device-input'
 import { Button } from '~/components/ui/button'
 import { Input } from '~/components/ui/input'
+import { NativeSelect } from '~/components/ui/native-select'
 import { Spinner } from '~/components/ui/spinner'
+import { Switch } from '~/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '~/components/ui/tooltip'
+import { getFriendlyModelName } from '~/lib/model'
 import { cn } from '~/lib/style'
 import { parseMediaLinks } from '~/lib/ytdlp'
+import { LIVE_PARTIAL_FIXED_MS, type LivePartialMode } from '~/pages/home/hooks/use-recording'
 import { useSession, type IdlePanel } from '../session'
+import { formatElapsed, LevelMeter } from './level-meter'
 import QuietRow from './quiet-row'
-
-function formatElapsed(seconds: number) {
-	const minutes = Math.floor(seconds / 60)
-	return `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
-}
-
-// Live capture meter — five hairline bars driven by the backend's `record_level` event
-// (a 0..1 peak, throttled to ~10/s). Center bars react hardest so the shape reads as a voice.
-const BAR_WEIGHTS = [0.5, 0.78, 1, 0.78, 0.5]
-const BAR_MIN_HEIGHT = 6
-const BAR_MAX_HEIGHT = 18
-/** Below this the capture counts as silence. */
-const SILENCE_LEVEL = 0.03
-/** How long silence must hold before the meter drops to dim stubs. */
-const SILENCE_HOLD_MS = 1000
-const METER_TICK_MS = 60
-/** No event for this long means the stream stalled — let the target fall back to zero. */
-const LEVEL_STALE_MS = 160
-
-function LevelMeter() {
-	const [level, setLevel] = useState(0)
-	const [silent, setSilent] = useState(false)
-	// Refs keep the audio-rate values out of the render path; only the smoothed level is state.
-	const targetRef = useRef(0)
-	const lastEventRef = useRef(Date.now())
-	const lastSoundRef = useRef(Date.now())
-
-	useEffect(() => {
-		const unlisten = listen<number>('record_level', ({ payload }) => {
-			const next = typeof payload === 'number' && Number.isFinite(payload) ? Math.min(Math.max(payload, 0), 1) : 0
-			targetRef.current = next
-			lastEventRef.current = Date.now()
-			if (next > SILENCE_LEVEL) lastSoundRef.current = Date.now()
-		})
-
-		const timer = window.setInterval(() => {
-			const now = Date.now()
-			// A dead device emits nothing at all — decay so it can't freeze mid-bar.
-			if (now - lastEventRef.current > LEVEL_STALE_MS) targetRef.current *= 0.6
-			// Fast attack, slower release: peaks stay legible, the fall stays calm.
-			setLevel((prev) => {
-				const target = targetRef.current
-				const eased = prev + (target - prev) * (target > prev ? 0.7 : 0.3)
-				return Math.abs(eased - target) < 0.004 ? target : eased
-			})
-			setSilent(now - lastSoundRef.current > SILENCE_HOLD_MS)
-		}, METER_TICK_MS)
-
-		return () => {
-			window.clearInterval(timer)
-			unlisten.then((fn) => fn())
-		}
-	}, [])
-
-	return (
-		<span aria-hidden className={cn('flex h-[18px] items-center gap-[3px]', silent && 'opacity-40')}>
-			{BAR_WEIGHTS.map((weight, index) => (
-				<span
-					key={index}
-					className="w-[2px] rounded-full bg-foreground transition-[height] duration-75 ease-out"
-					style={{ height: silent ? BAR_MIN_HEIGHT : BAR_MIN_HEIGHT + level * weight * (BAR_MAX_HEIGHT - BAR_MIN_HEIGHT) }}
-				/>
-			))}
-		</span>
-	)
-}
 
 /** One segment of the joined source switcher: icon-only keys, the active one reads as raised. */
 function Segment({ active, label, onClick, children }: { active?: boolean; label: string; onClick: () => void; children: React.ReactNode }) {
@@ -137,12 +75,89 @@ function RecordPanel() {
 				<AudioDeviceInput type="input" devices={recording.devices} device={recording.inputDevice} setDevice={recording.setInputDevice} />
 				<AudioDeviceInput type="output" devices={recording.devices} device={recording.outputDevice} setDevice={recording.setOutputDevice} />
 			</div>
+			{/* Live: transcribe while capturing instead of recording first. A span, not a label, so the */}
+			{/* eyebrow styling above stays with the device pickers. */}
+			<div className="-my-1.5 flex items-center justify-between gap-3">
+				<span id="live-transcription-label" className="text-[13px] text-foreground/90">
+					{m.liveTranscription()}
+				</span>
+				<Switch
+					aria-labelledby="live-transcription-label"
+					checked={recording.liveEnabled}
+					onCheckedChange={(checked) => recording.setLiveEnabled(checked)}
+				/>
+			</div>
+			{/* Live can run a lighter engine than the file workflow (Nemotron beside a large Whisper). */}
+			{recording.liveEnabled && (
+				<div className="space-y-1.5">
+					<label htmlFor="live-model">{m.liveModel()}</label>
+					<NativeSelect
+						id="live-model"
+						className="h-10 rounded-xl"
+						value={recording.installedModels.some((model) => model.path === recording.liveModelPath) ? recording.liveModelPath : ''}
+						onChange={(event) => recording.setLiveModelPath(event.target.value)}>
+						<option value="">{m.liveModelSameAsFile()}</option>
+						{recording.installedModels.map((model) => (
+							<option key={model.path} value={model.path}>
+								{preference.modelDisplayNames[model.path] ?? getFriendlyModelName(model.name)}
+							</option>
+						))}
+					</NativeSelect>
+					{/* Every refresh re-runs the encoder over the open utterance: this is the GPU knob. */}
+					<label htmlFor="live-partial-mode" className="pt-2">
+						{m.livePartialMode()}
+					</label>
+					<NativeSelect
+						id="live-partial-mode"
+						className="h-10 rounded-xl"
+						value={recording.livePartialMode}
+						onChange={(event) => recording.setLivePartialMode(event.target.value as LivePartialMode)}>
+						<option value="auto">{m.livePartialAuto()}</option>
+						<option value="off">{m.livePartialOff()}</option>
+						{LIVE_PARTIAL_FIXED_MS.map((ms) => (
+							<option key={ms} value={String(ms)}>
+								{m.livePartialEvery({ seconds: String(ms / 1000) })}
+							</option>
+						))}
+					</NativeSelect>
+					{/* Whisper reads a prompt; the AI turns the topic into one. Nemotron has no such input. */}
+					{recording.livePromptable && (
+						<>
+							<div className="flex items-center justify-between gap-3 pt-3">
+								<span id="live-glossary-label" className="text-[13px] text-foreground/90">
+									{m.aiGlossary()}
+								</span>
+								<Switch aria-labelledby="live-glossary-label" checked={recording.liveGlossary} onCheckedChange={recording.setLiveGlossary} />
+							</div>
+							{recording.liveGlossary && (
+								<Input
+									value={recording.liveTopic}
+									onChange={(event) => recording.setLiveTopic(event.target.value)}
+									placeholder={m.aiGlossaryTopicPlaceholder()}
+									aria-label={m.aiGlossaryTopic()}
+									className="h-10 rounded-xl"
+								/>
+							)}
+						</>
+					)}
+				</div>
+			)}
 			<Button
-				onClick={() => recording.startRecord()}
-				disabled={!preference.modelPath || (!recording.inputDevice && !recording.outputDevice)}
+				onClick={() => (recording.liveEnabled ? recording.startLive() : recording.startRecord())}
+				disabled={
+					recording.liveStarting ||
+					!(recording.liveEnabled ? recording.liveModel : preference.modelPath) ||
+					(!recording.inputDevice && !recording.outputDevice)
+				}
 				className="h-10 w-full rounded-xl disabled:opacity-40">
-				<Mic className="h-4 w-4" />
-				{m.startRecord()}
+				{recording.liveStarting ? (
+					<Spinner className="h-4 w-4" />
+				) : recording.liveEnabled ? (
+					<AudioLines className="h-4 w-4" />
+				) : (
+					<Mic className="h-4 w-4" />
+				)}
+				{recording.liveStarting ? m.liveStarting() : recording.liveEnabled ? m.startLive() : m.startRecord()}
 			</Button>
 		</div>
 	)
@@ -322,7 +337,7 @@ export default function IdleHero() {
 	const { dragging, browse, collectingFolder, panel, setPanel, link, recording } = useSession()
 
 	function selectPanel(next: IdlePanel) {
-		if (recording.isRecording || next === panel) return
+		if (recording.isRecording || recording.isLive || next === panel) return
 		setPanel(next)
 		if (next === 'link') void link.switchToLinkTab()
 	}

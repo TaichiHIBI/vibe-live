@@ -4,7 +4,7 @@ import { createElement } from 'react'
 import { describe, expect, it } from 'vitest'
 import type { Segment } from '~/lib/transcript'
 import type { TranscriptExportOptions } from '~/lib/transcript-export'
-import { PDF_FONT, TranscriptDocument } from './transcript-document'
+import { PDF_FONT, PDF_FONT_CJK, pdfFontFor, TranscriptDocument } from './transcript-document'
 
 /**
  * The bidi guard.
@@ -25,6 +25,9 @@ const HEBREW: Segment[] = [
 
 const ENGLISH: Segment[] = [{ start: 0, stop: 4000, text: 'An English line with עברית inside it and 42 numbers.', speaker: 0 }]
 
+// Kana, kanji and a Latin word: everything a Japanese transcript with a product name in it needs.
+const JAPANESE: Segment[] = [{ start: 0, stop: 4000, text: '今日はライブ文字起こしのテストをしています。Vibe で書き出します。', speaker: 0 }]
+
 function options(direction: 'rtl' | 'ltr'): TranscriptExportOptions {
 	return {
 		content: 'transcript',
@@ -44,6 +47,13 @@ async function renderPdf(segments: Segment[], direction: 'rtl' | 'ltr') {
 		fonts: [
 			{ src: `${FONT_DIRECTORY}Rubik-Regular.ttf`, fontWeight: 400 },
 			{ src: `${FONT_DIRECTORY}Rubik-Bold.ttf`, fontWeight: 700 },
+		],
+	})
+	Font.register({
+		family: PDF_FONT_CJK,
+		fonts: [
+			{ src: `${FONT_DIRECTORY}NotoSansJP-Regular.otf`, fontWeight: 400 },
+			{ src: `${FONT_DIRECTORY}NotoSansJP-Bold.otf`, fontWeight: 700 },
 		],
 	})
 	const document = createElement(TranscriptDocument, {
@@ -110,6 +120,22 @@ describe('transcript pdf', () => {
 		const pdf = await renderPdf(HEBREW, 'rtl')
 		expect(Buffer.from(pdf).subarray(0, 5).toString()).toBe('%PDF-')
 		expect(await extractText(pdf)).toContain('SaferPlace')
+	}, 30_000)
+})
+
+describe('japanese transcript pdf', () => {
+	it('picks the CJK font only when the text needs it', () => {
+		expect(pdfFontFor(ENGLISH.map((segment) => segment.text))).toBe(PDF_FONT)
+		expect(pdfFontFor(JAPANESE.map((segment) => segment.text))).toBe(PDF_FONT_CJK)
+		expect(pdfFontFor(['Title', 'ｶﾀｶﾅ'])).toBe(PDF_FONT_CJK)
+	})
+
+	// Rubik has no kana or kanji, and a font without a glyph writes garbage into the PDF rather
+	// than failing — exactly the bug this guards: the Japanese has to come back out as itself.
+	it('keeps Japanese text readable', async () => {
+		const text = await extractText(await renderPdf(JAPANESE, 'ltr'))
+		expect(text).toContain('ライブ文字起こし')
+		expect(text).toContain('Vibe')
 	}, 30_000)
 })
 

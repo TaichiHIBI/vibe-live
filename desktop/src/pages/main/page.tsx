@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { m } from '~/paraglide/messages.js'
 import Layout, { SIDEBAR_STORAGE_KEY, TOGGLE_SIDEBAR_EVENT } from '~/components/layout'
 import IdleHero from './components/idle-hero'
+import LiveView from './components/live-view'
 import PlayerBar from './components/player-bar'
 import RecentsSidebar from './components/recents-sidebar'
 import SessionView from './components/session-view'
@@ -51,6 +52,14 @@ function MainContent() {
 						transition={{ duration: 0.15, ease: 'easeOut' }}
 						className="flex min-h-0 flex-1 flex-col">
 						<IdleHero />
+					</motion.div>
+				) : mode === 'live' ? (
+					<motion.div
+						key="live"
+						exit={{ opacity: 0, y: -8 }}
+						transition={{ duration: 0.15, ease: 'easeOut' }}
+						className="flex min-h-0 flex-1 flex-col">
+						<LiveView />
 					</motion.div>
 				) : (
 					<motion.div

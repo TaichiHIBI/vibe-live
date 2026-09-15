@@ -61,7 +61,7 @@ pub fn get_audio_devices() -> Result<Vec<AudioDevice>> {
     Ok(audio_devices)
 }
 
-struct StreamHandle(Stream);
+pub(crate) struct StreamHandle(pub(crate) Stream);
 unsafe impl Send for StreamHandle {}
 unsafe impl Sync for StreamHandle {}
 
@@ -75,7 +75,7 @@ const LEVEL_SAMPLE_STRIDE: usize = 4;
 ///
 /// Everything here is atomic and allocation-free: the audio callback only does a few relaxed
 /// loads/stores, and once per 100ms one callback also performs the (non-blocking) `emit_to`.
-struct LevelMeter {
+pub(crate) struct LevelMeter {
     app_handle: AppHandle,
     started_at: Instant,
     /// Max level seen since the last emit, stored as `f32::to_bits` (monotonic for +0.0..=1.0).
@@ -84,7 +84,7 @@ struct LevelMeter {
 }
 
 impl LevelMeter {
-    fn new(app_handle: AppHandle) -> Self {
+    pub(crate) fn new(app_handle: AppHandle) -> Self {
         Self {
             app_handle,
             started_at: Instant::now(),
@@ -94,7 +94,7 @@ impl LevelMeter {
     }
 
     /// Accumulate one buffer's peak and emit if the throttle window elapsed.
-    fn push(&self, peak: f32) {
+    pub(crate) fn push(&self, peak: f32) {
         self.peak_bits.fetch_max(peak.to_bits(), Ordering::Relaxed);
 
         let now_ms = self.started_at.elapsed().as_millis() as u64;
@@ -116,7 +116,7 @@ impl LevelMeter {
 }
 
 /// Peak magnitude of a buffer, normalized to 0..1.
-fn buffer_peak<T>(input: &[T]) -> f32
+pub(crate) fn buffer_peak<T>(input: &[T]) -> f32
 where
     T: Sample,
     f32: FromSample<T>,
@@ -301,7 +301,10 @@ pub async fn start_record(app_handle: AppHandle, devices: Vec<AudioDevice>, reco
 }
 
 #[allow(unused_variables)]
-fn get_output_device_and_config(host: &cpal::Host, audio_device: &AudioDevice) -> Result<(Device, SupportedStreamConfig)> {
+pub(crate) fn get_output_device_and_config(
+    host: &cpal::Host,
+    audio_device: &AudioDevice,
+) -> Result<(Device, SupportedStreamConfig)> {
     // On macOS, use the default output device directly — cpal's loopback support
     // requires this path to build an input stream from an output device.
     #[cfg(target_os = "macos")]
