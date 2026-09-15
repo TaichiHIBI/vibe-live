@@ -89,7 +89,9 @@ function MainContent() {
 function useShowSidebar() {
 	const sidebarVisible = useSidebarVisible()
 	const { queue } = useSession()
-	const batch = queue.jobs.length > 1
+	// A live session with one project opened beside it is not a batch: the rail appears, but
+	// closing Recents (and the settings button with it) would only take the way back.
+	const batch = queue.jobs.filter((job) => !job.live).length > 1
 	const wasBatch = useRef(batch)
 	const visibleRef = useRef(sidebarVisible)
 	visibleRef.current = sidebarVisible
