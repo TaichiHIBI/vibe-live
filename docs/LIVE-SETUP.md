@@ -70,14 +70,9 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 
 ## 2. リポジトリを取得する(初回のみ)
 
-リポジトリは非公開です。先にオーナー(TaichiHIBI)から GitHub の招待を受けて、承認しておいてください。
-
 ```bash
 git clone -b live https://github.com/TaichiHIBI/vibe-live.git ~/vibe-live
 ```
-
-ユーザー名とパスワードを聞かれたら、パスワード欄には GitHub のパスワードではなく
-[Personal Access Token](https://github.com/settings/tokens)(`repo` 権限)を貼り付けます。
 
 ## 3. ビルドしてインストールする
 
@@ -101,6 +96,19 @@ cd ~/vibe-live && chore live-install
 
 大きいモデルなので、文字起こし中は 4 GB 前後のメモリを使います。最後に使ってから5分たつと自動で解放されます(設定の「詳細設定」→「非アクティブ時にモデルを解放」で変更できます)。
 
+### ほかのモデルを使う
+
+アプリの設定「モデル」→「モデルをダウンロード」のリンクから開くページに、使えるモデルの一覧があります。
+
+**モデル一覧: https://thewh1teagle.github.io/vibe/docs#models**(ブラウザの言語が日本語なら日本語で表示されます)
+
+軽い Whisper(Tiny / Small / Medium)、large-v3 turbo、Parakeet、Nemotron などがあります。入れ方は2通りです。
+
+- **Magic Setup**: リンクを押すと Vibe が開き、そのままダウンロードが始まります
+- **直接ダウンロード**: リンクのアドレスをコピーして、設定「モデル」→「モデルライブラリ」の「モデルリンクを貼り付け」欄に貼り、Enter を押します
+
+入れたモデルは、設定「モデル」で選ぶとファイルの文字起こしに、録音パネルの「ライブ用モデル」で選ぶとライブに使われます。
+
 ## 5. ライブ文字起こしを使う
 
 1. ホーム画面の録音パネルで「ライブ文字起こし」をオンにします
@@ -114,12 +122,8 @@ cd ~/vibe-live && chore live-install
 
 large-v3 は、M4 Pro でも1回の処理に 0.8〜1.4 秒かかります。遅れが気になる場合は、軽い **Nemotron**(約470 MB)をライブ専用に入れます。
 
-```bash
-curl -L -o ~/Library/Application\ Support/github.com.thewh1teagle.vibe/nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf "https://huggingface.co/vibe-app/nemotron-3.5-asr-streaming-0.6b-gguf/resolve/main/nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf?download=true"
-```
-
+上の[モデル一覧](https://thewh1teagle.github.io/vibe/docs#models)にある「Nemotron 3.5 ASR Streaming 0.6B」の「Q4_K_Mをダウンロード」のリンクを、「モデルリンクを貼り付け」欄に貼って入れます。
 入れたら、録音パネルの「ライブ用モデル」で Nemotron を選びます。
-設定の「モデル」で「モデルフォルダ」の場所を変えている場合は、その場所に置いてください。
 
 ## 更新するとき
 
