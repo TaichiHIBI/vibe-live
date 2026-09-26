@@ -10,6 +10,7 @@ import { NativeSelect } from '~/components/ui/native-select'
 import { Spinner } from '~/components/ui/spinner'
 import { Switch } from '~/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '~/components/ui/tooltip'
+import { VocabularyEditor } from '~/components/vocabulary-editor'
 import { getFriendlyModelName } from '~/lib/model'
 import { cn } from '~/lib/style'
 import { parseMediaLinks } from '~/lib/ytdlp'
@@ -132,22 +133,23 @@ function RecordPanel() {
 							</option>
 						))}
 					</NativeSelect>
-					{/* Whisper reads a prompt; the AI turns the topic into one. Nemotron has no such input. */}
+					{/* Whisper reads a prompt; the word list becomes one. Nemotron has no such input. */}
 					{recording.livePromptable && (
 						<>
 							<div className="flex items-center justify-between gap-3 pt-3">
 								<span id="live-glossary-label" className="text-[13px] text-foreground/90">
-									{m.aiGlossary()}
+									{m.useVocabularyList()}
 								</span>
 								<Switch aria-labelledby="live-glossary-label" checked={recording.liveGlossary} onCheckedChange={recording.setLiveGlossary} />
 							</div>
 							{recording.liveGlossary && (
-								<Input
-									value={recording.liveTopic}
-									onChange={(event) => recording.setLiveTopic(event.target.value)}
-									placeholder={m.aiGlossaryTopicPlaceholder()}
-									aria-label={m.aiGlossaryTopic()}
-									className="h-10 rounded-xl"
+								<VocabularyEditor
+									value={recording.liveVocabulary}
+									onChange={recording.setLiveVocabulary}
+									topic={recording.liveTopic}
+									onTopicChange={recording.setLiveTopic}
+									// Nothing has been said yet: the topic alone drives the list.
+									source={async () => ({ transcript: '', language: preference.modelOptions.lang })}
 								/>
 							)}
 						</>

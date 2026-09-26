@@ -40,7 +40,7 @@ export const CONFIG_KEYS = {
 	projectsPath: 'transcription.projectsPath',
 	/** Export every finished transcript automatically: formats, destination, replace rule. */
 	autoExport: 'transcription.autoExport',
-	/** Re-transcribe: have the AI connection write a vocabulary prompt from the topic and the old transcript. */
+	/** Re-transcribe: give Whisper a word list, typed or written from the old transcript, as its prompt. */
 	aiGlossaryOnRetranscribe: 'transcription.aiGlossaryOnRetranscribe',
 
 	// Recording
@@ -56,10 +56,12 @@ export const CONFIG_KEYS = {
 	liveModelPath: 'recording.liveModelPath',
 	/** How the line in progress is refreshed: 'off', 'auto', or a fixed number of milliseconds. */
 	livePartialMode: 'recording.livePartialMode',
-	/** Live: have the AI connection write a vocabulary prompt from the topic before starting. */
+	/** Live: hand the word list below to Whisper as its prompt. */
 	liveGlossary: 'recording.liveGlossary',
-	/** Live: what the recording is about, for that prompt. */
+	/** Live: what the recording is about, for writing the word list with AI or a chat. */
 	liveTopic: 'recording.liveTopic',
+	/** Live: the word list itself, typed, pasted or written by the AI connection. */
+	liveVocabulary: 'recording.liveVocabulary',
 
 	// Reading the transcript
 	textAreaDirection: 'transcript.textDirection',

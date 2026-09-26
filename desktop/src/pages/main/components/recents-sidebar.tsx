@@ -24,8 +24,7 @@ import { TOGGLE_SIDEBAR_EVENT } from '~/components/layout'
 import { getTextDirection } from '~/paraglide/runtime.js'
 import { UpdaterContext } from '~/providers/updater'
 import { Spinner } from '~/components/ui/spinner'
-import { toast } from 'sonner'
-import { combinePrompt, createClient, generateGlossary } from '~/lib/ai'
+import { combinePrompt } from '~/lib/ai'
 import { usePreferenceProvider } from '~/providers/preference'
 import { useSession } from '../session'
 import RetranscribeDialog, { type RetranscribeChoices } from './retranscribe-dialog'
@@ -213,39 +212,21 @@ function RecentRow({
 		onDeleted()
 	}
 
-	async function retranscribe(choices: RetranscribeChoices) {
+	function retranscribe(choices: RetranscribeChoices) {
 		if (!menu.sourcePath || !menu.sourceExists) return
 		const item = { name: entry.name, path: menu.sourcePath, projectName: entry.name }
-		if (!choices.glossary) {
-			queue.enqueue([item])
-			return
-		}
-		// The old transcript — a live one, typically — tells the AI which words matter; it writes
-		// them with the right characters, and Whisper reads them as its prompt. A failure here
-		// is not a reason to skip the run: it just goes without the glossary.
-		const pending = toast.loading(m.aiGlossaryGenerating(), { position: 'bottom-center' })
-		try {
-			const record = await readTranscript(entry.path)
-			const transcript = (record?.segments ?? [])
-				.map((segment) => segment.text.trim())
-				.filter(Boolean)
-				.join('\n')
-			const glossary = await generateGlossary(createClient(preference.ai.connection), {
-				topic: choices.topic,
-				transcript,
-				language: record?.language || preference.modelOptions.lang,
-				contextTokens: preference.ai.connection.contextTokens,
-			})
-			toast.dismiss(pending)
-			if (glossary) toast.success(m.aiGlossaryReady(), { description: glossary, position: 'bottom-center', duration: 8000 })
-			const initPrompt = glossary ? combinePrompt(preference.modelOptions.init_prompt, glossary) : null
-			queue.enqueue([{ ...item, ...(initPrompt ? { initPrompt } : {}) }])
-		} catch (error) {
-			toast.dismiss(pending)
-			console.error('glossary generation failed', error)
-			toast.warning(m.aiGlossaryFailed(), { description: String(error instanceof Error ? error.message : error), position: 'bottom-center' })
-			queue.enqueue([item])
-		}
+		const initPrompt = choices.vocabulary ? combinePrompt(preference.modelOptions.init_prompt, choices.vocabulary) : null
+		queue.enqueue([{ ...item, ...(initPrompt ? { initPrompt } : {}) }])
+	}
+
+	/** The old transcript — a live one, typically — tells the AI or a chat which words matter. */
+	async function vocabularySource() {
+		const record = await readTranscript(entry.path)
+		const transcript = (record?.segments ?? [])
+			.map((segment) => segment.text.trim())
+			.filter(Boolean)
+			.join('\n')
+		return { transcript, language: record?.language || preference.modelOptions.lang }
 	}
 
 	async function commitRename() {
@@ -276,7 +257,7 @@ function RecentRow({
 
 	return (
 		<div className={cn('group relative flex items-center rounded-xl transition-colors duration-150', active ? 'bg-muted' : 'hover:bg-muted/60')}>
-			<RetranscribeDialog open={retranscribing} onOpenChange={setRetranscribing} name={entry.name} onConfirm={(choices) => void retranscribe(choices)} />
+			<RetranscribeDialog open={retranscribing} onOpenChange={setRetranscribing} name={entry.name} onConfirm={retranscribe} source={vocabularySource} />
 			<button
 				type="button"
 				onClick={onOpen}

@@ -7,7 +7,7 @@ import type { AudioDevice } from '~/lib/audio'
 import * as config from '~/lib/config'
 import { CONFIG_KEYS } from '~/lib/config-keys'
 import { usePersisted } from '~/lib/config-store'
-import { combinePrompt, createClient, generateGlossary } from '~/lib/ai'
+import { combinePrompt, normalizeGlossary } from '~/lib/ai'
 import { gpuOutOfMemoryBefore } from '~/lib/gpu-memory'
 import { KEEP_AWAKE, startKeepAwake, stopKeepAwake } from '~/lib/keep-awake'
 import { liveLanguage } from '~/lib/live-language'
@@ -70,6 +70,7 @@ export function useRecording(onBeforeStart: () => void, hooks?: RecordingHooks) 
 	/** Vocabulary prompt for Whisper live, written by the AI connection from the topic. */
 	const [liveGlossary, setLiveGlossary] = usePersisted<boolean>(CONFIG_KEYS.liveGlossary, false)
 	const [liveTopic, setLiveTopic] = usePersisted<string>(CONFIG_KEYS.liveTopic, '')
+	const [liveVocabulary, setLiveVocabulary] = usePersisted<string>(CONFIG_KEYS.liveVocabulary, '')
 	const [liveModelMetadata, setLiveModelMetadata] = useState<ModelMetadata | null>(null)
 	const [inputDevice, setInputDevice] = useState<AudioDevice | null>(null)
 	const [outputDevice, setOutputDevice] = useState<AudioDevice | null>(null)
@@ -211,8 +212,7 @@ export function useRecording(onBeforeStart: () => void, hooks?: RecordingHooks) 
 			// differently (Whisper "ja", Nemotron "ja-JP"), so ask the live model what it takes.
 			const metadata = modelPath === preference.modelPath ? preference.modelMetadata : await invoke<ModelMetadata>('get_model_metadata', { modelPath })
 			const lang = liveLanguage(preference.modelOptions.lang, metadata?.capabilities)
-			// The glossary comes first: the AI model and the speech model need not share memory.
-			const prompt = await livePrompt(metadata)
+			const prompt = livePrompt(metadata)
 			const loadResult = await invoke<string>('load_model', {
 				modelPath,
 				gpuDevice: preference.gpuDevice,
@@ -251,32 +251,15 @@ export function useRecording(onBeforeStart: () => void, hooks?: RecordingHooks) 
 	}
 
 	/**
-	 * Whisper's prompt for this live session: the AI-written vocabulary when asked for and the
-	 * model reads prompts, else the one from the settings. A failed generation is a warning, not a
-	 * reason to hold the session up.
+	 * Whisper's prompt for this live session: the one from the settings, then the word list when it
+	 * is switched on and the model reads prompts. The list is written before the start, by hand or
+	 * with AI, so starting never waits on an AI connection.
 	 */
-	async function livePrompt(metadata: ModelMetadata | null | undefined): Promise<string | null> {
+	function livePrompt(metadata: ModelMetadata | null | undefined): string | null {
 		if (metadata?.capabilities.text_prompts === false) return null
 		const fallback = preference.modelOptions.init_prompt?.trim() || null
-		if (!liveGlossary || !liveTopic.trim()) return fallback
-		const pending = toast.loading(m.aiGlossaryGenerating(), { position: 'bottom-center' })
-		try {
-			const glossary = await generateGlossary(createClient(preference.ai.connection), {
-				topic: liveTopic,
-				transcript: '',
-				language: preference.modelOptions.lang,
-				contextTokens: preference.ai.connection.contextTokens,
-			})
-			toast.dismiss(pending)
-			if (!glossary) return fallback
-			toast.success(m.aiGlossaryReady(), { description: glossary, position: 'bottom-center', duration: 8000 })
-			return combinePrompt(fallback, glossary)
-		} catch (error) {
-			toast.dismiss(pending)
-			console.error('glossary generation failed', error)
-			toast.warning(m.aiGlossaryFailed(), { description: errorMessage(error), position: 'bottom-center' })
-			return fallback
-		}
+		if (!liveGlossary) return fallback
+		return combinePrompt(fallback, normalizeGlossary(liveVocabulary))
 	}
 
 	/** Returns at once; `isLive` stays set until the backend's `live_finish` (or `live_error`) lands. */
@@ -314,6 +297,8 @@ export function useRecording(onBeforeStart: () => void, hooks?: RecordingHooks) 
 		setLiveGlossary,
 		liveTopic,
 		setLiveTopic,
+		liveVocabulary,
+		setLiveVocabulary,
 		livePromptable,
 		recordingName,
 		setRecordingName,
