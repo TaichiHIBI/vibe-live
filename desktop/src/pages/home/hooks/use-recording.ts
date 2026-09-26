@@ -11,7 +11,7 @@ import { combinePrompt, createClient, generateGlossary } from '~/lib/ai'
 import { gpuOutOfMemoryBefore } from '~/lib/gpu-memory'
 import { KEEP_AWAKE, startKeepAwake, stopKeepAwake } from '~/lib/keep-awake'
 import { liveLanguage } from '~/lib/live-language'
-import { listInstalledModels, type InstalledModel, type ModelMetadata } from '~/lib/model'
+import { isModelFileUsable, listInstalledModels, type InstalledModel, type ModelMetadata } from '~/lib/model'
 import { ensureSystemAudioPermission } from '~/lib/permissions'
 import { ErrorModalContext } from '~/providers/error-modal'
 import { usePreferenceProvider } from '~/providers/preference'
@@ -24,6 +24,23 @@ export const LIVE_PARTIAL_FIXED_MS = [500, 1000, 2000, 3000, 5000] as const
 export function livePartialOptions(mode: LivePartialMode) {
 	if (mode === 'off' || mode === 'auto') return { partialMode: mode }
 	return { partialMode: 'fixed', partialIntervalMs: Number(mode) }
+}
+
+/**
+ * Live segments speech with Silero VAD whatever the engine, but the VAD file is only fetched for
+ * engines that require it or for stable timestamps, so a Whisper-only install has none. It is
+ * under 1 MB: fetch it here rather than fail the session.
+ */
+async function ensureLiveVad(modelsFolder: string) {
+	const vadPath = `${modelsFolder}/${config.vadModelFilename}`
+	if (await isModelFileUsable(vadPath)) return vadPath
+	const pending = toast.loading(m.downloadingVadModel(), { position: 'bottom-center' })
+	try {
+		await invoke('download_model', { url: config.vadModelUrl, path: vadPath })
+	} finally {
+		toast.dismiss(pending)
+	}
+	return vadPath
 }
 
 function errorMessage(error: unknown) {
@@ -204,10 +221,11 @@ export function useRecording(onBeforeStart: () => void, hooks?: RecordingHooks) 
 			})
 			if (loadResult === 'gpu_fallback') toast.warning(m.gpuFallbackToCpu(), { position: 'bottom-center', duration: 8000 })
 			const modelsFolder = await invoke<string>('get_models_folder')
+			const vadModel = await ensureLiveVad(modelsFolder)
 			await invoke('live_connect', {
 				options: {
 					lang,
-					vadModel: `${modelsFolder}/${config.vadModelFilename}`,
+					vadModel,
 					prompt,
 					...livePartialOptions(livePartialMode),
 				},
