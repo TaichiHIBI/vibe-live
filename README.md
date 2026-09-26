@@ -25,6 +25,8 @@
 
 <hr />
 
+> **このフォーク(`live` ブランチ)について**: ライブ文字起こしを追加しています。公式配布版にはこの機能がないため、ソースからビルドしてください。手順: [docs/LIVE-SETUP.md](docs/LIVE-SETUP.md)
+
 ## Screenshots
 
 <p align="center">

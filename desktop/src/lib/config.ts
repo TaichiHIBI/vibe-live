@@ -32,6 +32,9 @@ export interface ModelDownload extends ModelIntegrity {
 // left unset rather than guessed: a wrong value would reject a perfectly good download.
 export const modelUrls: Record<'default' | 'hebrew', ModelDownload[]> = {
 	default: [
+		// This fork defaults to full large-v3, the model live transcription uses as well. Only
+		// ggerganov hosts it, so the turbo mirrors below stay as the fallback.
+		{ url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin' },
 		{ url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin' },
 		{ url: 'https://huggingface.co/vibe-app/whisper-large-v3-turbo-gguf/resolve/main/ggml-large-v3-turbo.bin' }, // Hugging Face fallback
 		{ url: 'https://github.com/thewh1teagle/vibe/releases/download/model-files-v1.0/ggml-large-v3-turbo.bin' }, // GitHub fallback

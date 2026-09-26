@@ -158,6 +158,18 @@ task upgrade {
     echo "vibe upgraded and relaunched"
 }
 
+# Build this branch with live transcription and install it (macOS). The
+# released server has no live route, so the sidecar is built from server/
+# rather than taken from the pinned release. See docs/LIVE-SETUP.md.
+task live-install {
+    if $OS != macos { fail "live-install is for macOS; the live build is only tested there" }
+    install
+    # setup still runs for ffmpeg; server-build then replaces the released server.
+    setup
+    server-build
+    upgrade
+}
+
 # Run the frontend tests.
 task test {
     cd desktop
